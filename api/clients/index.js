@@ -1,9 +1,8 @@
-// api/clients/[[...slug]].js
+// api/clients/index.js
+// Handles both /api/clients and /api/clients/:id
 const { indexRoute, idRoute } = require('../_lib/crud');
 const { getCollection } = require('../_lib/db');
 
-// Cascade: deleting a client also removes their brand details, meta
-// accounts, and scheduled posts.
 async function cascade(clientId) {
   const bd = await getCollection('brandDetails');
   const ma = await getCollection('metaAccounts');
@@ -18,11 +17,18 @@ async function cascade(clientId) {
 const list = indexRoute('clients');
 const byId = idRoute('clients', cascade);
 
+function extractId(req) {
+  if (req.query && req.query.id) return req.query.id;
+  const path = (req.url || '').split('?')[0];
+  const match = path.match(/^\/api\/clients\/([^/]+)$/);
+  return match ? match[1] : null;
+}
+
 module.exports = async (req, res) => {
-  const slug = req.query.slug;
-  if (!slug || (Array.isArray(slug) && slug.length === 0)) {
-    return list(req, res);
+  const id = extractId(req);
+  if (id) {
+    req.query.id = id;
+    return byId(req, res);
   }
-  req.query.id = Array.isArray(slug) ? slug[0] : slug;
-  return byId(req, res);
+  return list(req, res);
 };

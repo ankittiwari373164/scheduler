@@ -1,15 +1,21 @@
-// api/ig-queue/[[...slug]].js
-// Merged route — handles:
+// api/ig-queue/index.js
+// Handles:
 //   GET    /api/ig-queue              → list jobs
 //   POST   /api/ig-queue              → add a new job
 //   GET    /api/ig-queue/:jobId       → fetch one job
 //   PATCH  /api/ig-queue/:jobId       → update status / metaPostId
 //   DELETE /api/ig-queue/:jobId       → cancel a pending job
-
 const { getCollection } = require('../_lib/db');
 const { readBody, jsonResponse, withCors, nextId } = require('../_lib/helpers');
 
 function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
+
+function extractJobId(req) {
+  if (req.query && req.query.jobId) return req.query.jobId;
+  const path = (req.url || '').split('?')[0];
+  const match = path.match(/^\/api\/ig-queue\/([^/]+)$/);
+  return match ? match[1] : null;
+}
 
 async function handleList(req, res) {
   const col = await getCollection('igQueue');
@@ -79,15 +85,13 @@ async function handleOneJob(req, res, jobId) {
 }
 
 module.exports = withCors(async (req, res) => {
-  const slug = req.query.slug;
-  const hasJobId = slug && (Array.isArray(slug) ? slug.length > 0 : true);
+  const jobId = extractJobId(req);
 
-  if (!hasJobId) {
-    if (req.method === 'GET')  return handleList(req, res);
-    if (req.method === 'POST') return handleCreate(req, res);
-    return jsonResponse(res, 405, { error: 'method not allowed' });
+  if (jobId) {
+    return handleOneJob(req, res, jobId);
   }
 
-  const jobId = Array.isArray(slug) ? slug[0] : slug;
-  return handleOneJob(req, res, jobId);
+  if (req.method === 'GET')  return handleList(req, res);
+  if (req.method === 'POST') return handleCreate(req, res);
+  return jsonResponse(res, 405, { error: 'method not allowed' });
 });

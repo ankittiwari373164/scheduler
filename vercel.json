@@ -2,7 +2,12 @@
   "version": 2,
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/", "destination": "/index.html" }
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/api/portfolios/:id", "destination": "/api/portfolios?id=:id" },
+    { "source": "/api/clients/:id", "destination": "/api/clients?id=:id" },
+    { "source": "/api/meta-accounts/:id", "destination": "/api/meta-accounts?id=:id" },
+    { "source": "/api/scheduled-posts/:id", "destination": "/api/scheduled-posts?id=:id" },
+    { "source": "/api/ig-queue/:jobId", "destination": "/api/ig-queue?jobId=:jobId" }
   ],
   "crons": [
     {
