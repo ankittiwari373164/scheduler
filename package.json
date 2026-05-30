@@ -4,7 +4,7 @@
   "description": "Meta Business Suite scheduler with MongoDB, Google Drive OAuth, and server-side IG scheduling",
   "private": true,
   "engines": {
-    "node": "22.x"
+    "node": "24.x"
   },
   "dependencies": {
     "mongodb": "^6.3.0"
