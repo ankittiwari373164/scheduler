@@ -1,0 +1,12 @@
+{
+  "name": "metaflow-scheduler",
+  "version": "2.0.0",
+  "description": "Meta Business Suite scheduler with MongoDB, Google Drive OAuth, and server-side IG scheduling",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mongodb": "^6.3.0"
+  }
+}
