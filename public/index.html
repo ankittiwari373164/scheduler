@@ -1261,10 +1261,11 @@ const Api = (function(){
   // Load everything from the server into the global DB + CFG objects.
   async function loadAll() {
     try {
-      const [portfolios, clients, brandDetails, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
+      // Fetch clients once, reuse the same list for brandDetails
+      const clients = await jget('/api/clients');
+      const [portfolios, brandDetails, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
         jget('/api/portfolios'),
-        jget('/api/clients'),
-        Promise.all((await jget('/api/clients')).map(c => jget(`/api/brand-details/${c.id}`).catch(()=>null))).then(rs=>rs.filter(Boolean)),
+        Promise.all(clients.map(c => jget(`/api/brand-details/${c.id}`).catch(()=>null))).then(rs=>rs.filter(Boolean)),
         jget('/api/meta-accounts'),
         jget('/api/scheduled-posts'),
         jget('/api/post-history'),
