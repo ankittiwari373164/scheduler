@@ -1401,11 +1401,20 @@ const Api = (function(){
     return jpost('/api/migrate', payload);
   }
 
+  async function getClient(id) {
+    // Fetch all clients and find the one matching id (idRoute doesn't support GET)
+    const all = await jget('/api/clients');
+    return all.find(c => c.id === id || c.id === parseInt(id)) || null;
+  }
+  async function getBrandDetails(clientId) {
+    return jget(`/api/brand-details/${clientId}`).catch(() => null);
+  }
+
   return {
     loadAll, saveAll, scheduleSyncSave,
     savePortfolio, deletePortfolio,
-    saveClient, deleteClient,
-    saveBrandDetails,
+    saveClient, deleteClient, getClient,
+    saveBrandDetails, getBrandDetails,
     saveMetaAccount, deleteMetaAccount,
     saveScheduledPost,
     savePostHistory,
@@ -1739,15 +1748,12 @@ async function saveClient() {
   renderDriveBotPanel();
 }
 
-function editClient(id) {
-  const c = DB.clients.find(x => x.id === id);
-  if (!c) return;
+async function editClient(id) {
   _editingClientId = id;
   document.getElementById('clientModalTitle').textContent = 'Edit Client';
-  // FIX: rewire save button so it always saves the correct client
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
   document.getElementById('clientSaveBtn').onclick = saveClient;
-  // FIX: clear ALL fields first so stale data from a previous edit doesn't bleed through
+  // Clear all fields immediately while fetching
   ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(fid => { const el=document.getElementById(fid); if(el) el.value=''; });
   document.getElementById('cDriveTime').value = '09:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
@@ -1755,8 +1761,29 @@ function editClient(id) {
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
   const _cr = document.getElementById('cDriveCustomDaysRow');
   if (_cr) _cr.style.display = 'none';
-  // Now populate with this client's actual data
-  document.getElementById('cName').value = c.name;
+  openModal('clientModal');
+  // Fetch FRESH data from server — never rely on potentially stale local DB cache
+  let c, bd;
+  try {
+    [c, bd] = await Promise.all([
+      Api.getClient(id),
+      Api.getBrandDetails(id)
+    ]);
+  } catch(e) {
+    toast('Failed to load client: ' + e.message, 'error');
+    return;
+  }
+  if (!c || (Array.isArray(c) && !c.length)) {
+    toast('Client not found', 'error');
+    return;
+  }
+  // Server returns array from list endpoint — unwrap if needed
+  if (Array.isArray(c)) c = c[0];
+  // Update local cache with fresh server data
+  const localIdx = DB.clients.findIndex(x => x.id === id);
+  if (localIdx >= 0) DB.clients[localIdx] = { ...DB.clients[localIdx], ...c };
+  // Populate form with guaranteed-fresh data
+  document.getElementById('cName').value = c.name || '';
   document.getElementById('cType').value = c.businessType || '';
   document.getElementById('cEmail').value = c.email || '';
   document.getElementById('cPhone').value = c.phone || '';
@@ -1771,11 +1798,10 @@ function editClient(id) {
   });
   const customRow = document.getElementById('cDriveCustomDaysRow');
   if (customRow) customRow.style.display = (c.driveFreq === 'custom') ? 'block' : 'none';
-  const bd = DB.brandDetails.find(b => b.clientId === id);
   document.getElementById('cBrand').value = bd ? bd.content : '';
   const sel = document.getElementById('cPortfolio');
-  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${p.id===c.portfolioId?'selected':''}>${p.name}</option>`).join('');
-  openModal('clientModal');
+  const portfolioId = parseInt(c.portfolioId);
+  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${p.id===portfolioId?'selected':''}>${p.name}</option>`).join('');
 }
 
 async function deleteClient(id) {
