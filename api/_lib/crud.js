@@ -97,6 +97,18 @@ function makeUpdateHandler(collectionKey) {
   };
 }
 
+// Get-by-id handler — fetches a single record by integer id.
+function makeGetByIdHandler(collectionKey) {
+  return async (req, res) => {
+    const id = parseInt(req.query.id);
+    if (!id) return jsonResponse(res, 400, { error: 'id required' });
+    const col = await getCollection(collectionKey);
+    const doc = await col.findOne({ id });
+    if (!doc) return jsonResponse(res, 404, { error: 'not found' });
+    jsonResponse(res, 200, strip(doc));
+  };
+}
+
 // Delete handler — by integer id.
 function makeDeleteHandler(collectionKey, cascadeFn = null) {
   return async (req, res) => {
@@ -127,13 +139,15 @@ function indexRoute(collectionKey) {
 }
 
 function idRoute(collectionKey, cascadeFn = null) {
+  const getById = makeGetByIdHandler(collectionKey);
   const update = makeUpdateHandler(collectionKey);
   const remove = makeDeleteHandler(collectionKey, cascadeFn);
   return withCors(async (req, res) => {
+    if (req.method === 'GET')    return getById(req, res);
     if (req.method === 'PUT' || req.method === 'PATCH') return update(req, res);
     if (req.method === 'DELETE') return remove(req, res);
     jsonResponse(res, 405, { error: 'method not allowed' });
   });
 }
 
-module.exports = { indexRoute, idRoute, strip };
+module.exports = { indexRoute, idRoute, strip, makeGetByIdHandler };

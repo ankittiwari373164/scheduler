@@ -1743,14 +1743,28 @@ async function saveClient() {
 }
 
 async function editClient(id) {
-  // Normalise id to integer to handle string/number type mismatches from MongoDB
+  // Always fetch the client fresh from the server by ID — never rely on local cache.
+  // This guarantees we show the correct client regardless of any local ID mismatches.
   const numId = parseInt(id);
-  const c = DB.clients.find(x => parseInt(x.id) === numId);
-  if (!c) { toast('Client not found — please refresh the page', 'error'); return; }
-  _editingClientId = c.id; // store the actual id from the DB object
+  let c, brandContent = '';
+  try {
+    // GET /api/clients/:id fetches the exact document from MongoDB by its id field
+    const res = await fetch(`/api/clients/${numId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    c = await res.json();
+  } catch(e) {
+    // Fallback to local cache if server fetch fails
+    c = DB.clients.find(x => parseInt(x.id) === numId);
+    if (!c) { toast('Client not found — please refresh the page', 'error'); return; }
+  }
+  // Update local cache to stay in sync
+  const localIdx = DB.clients.findIndex(x => parseInt(x.id) === numId);
+  if (localIdx >= 0) Object.assign(DB.clients[localIdx], c);
+
+  _editingClientId = c.id;
   document.getElementById('clientModalTitle').textContent = 'Edit Client';
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
-  document.getElementById('cName').value = c.name;
+  document.getElementById('cName').value = c.name || '';
   document.getElementById('cType').value = c.businessType || '';
   document.getElementById('cEmail').value = c.email || '';
   document.getElementById('cPhone').value = c.phone || '';
@@ -1759,32 +1773,25 @@ async function editClient(id) {
   document.getElementById('cDriveTime').value = c.driveTime || '09:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', (c.driveFreq||'3x')===f));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', (c.driveFmt||'image')===f));
-  // Restore custom-days selection
   const customDays = c.driveCustomDays || [];
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => {
     p.classList.toggle('sel', customDays.includes(p.dataset.d));
   });
   const customRow = document.getElementById('cDriveCustomDaysRow');
   if (customRow) customRow.style.display = (c.driveFreq === 'custom') ? 'block' : 'none';
-  // Fetch brand details fresh from server for this specific client to avoid stale/mismatched data
-  let brandContent = '';
+  // Fetch brand details fresh from server using the confirmed server-side client id
   try {
-    const freshBd = await fetch(`/api/brand-details/${c.id}`).then(r => r.ok ? r.json() : null);
-    if (freshBd && freshBd.content) {
-      // Update local cache with type-safe lookup
-      const localBd = DB.brandDetails.find(b => parseInt(b.clientId) === numId);
-      if (localBd) { localBd.content = freshBd.content; }
-      else { DB.brandDetails.push({ ...freshBd, clientId: c.id }); }
-      brandContent = freshBd.content;
-    }
+    const bd = await fetch(`/api/brand-details/${c.id}`).then(r => r.ok ? r.json() : null);
+    brandContent = (bd && bd.content) ? bd.content : '';
+    // Sync local brand cache
+    const localBd = DB.brandDetails.find(b => parseInt(b.clientId) === parseInt(c.id));
+    if (localBd) localBd.content = brandContent;
   } catch(e) {
-    // Fall back to local cache on network error
-    const bd = DB.brandDetails.find(b => parseInt(b.clientId) === numId);
-    brandContent = bd ? bd.content : '';
+    const localBd = DB.brandDetails.find(b => parseInt(b.clientId) === parseInt(c.id));
+    brandContent = localBd ? localBd.content : '';
   }
   document.getElementById('cBrand').value = brandContent;
   const sel = document.getElementById('cPortfolio');
-  // Use parseInt on both sides to handle string/number type mismatch for portfolioId
   sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${parseInt(p.id)===parseInt(c.portfolioId)?'selected':''}>${p.name}</option>`).join('');
   openModal('clientModal');
 }
