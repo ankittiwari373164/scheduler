@@ -1417,6 +1417,10 @@ const Api = (function(){
     return jpost('/api/migrate', payload);
   }
 
+  async function saveConfig(partial) {
+    return jput('/api/config', partial);
+  }
+
   return {
     loadAll, saveAll, scheduleSyncSave,
     savePortfolio, deletePortfolio,
@@ -1427,7 +1431,7 @@ const Api = (function(){
     savePostHistory,
     listIgQueue, addIgJob, deleteIgJob,
     googleStatus, googleDisconnect, getGoogleAccessToken,
-    migrate
+    migrate, saveConfig
   };
 })();
 
@@ -2524,9 +2528,18 @@ Return ONLY valid JSON, no markdown fences, no explanation:
     }
     const data = await res.json();
     let txt = data.choices[0].message.content.trim().replace(/```json|```/g,'').trim();
+    // Sanitize control characters that break JSON.parse
+    txt = txt.replace(/[\x00-\x1F\x7F]/g, c => c==='\n'||c==='\t' ? c : ' ');
     const jsonMatch = txt.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Invalid JSON response from Groq');
-    const parsed = JSON.parse(jsonMatch[0]);
+    // Extra safety: replace unescaped newlines inside JSON string values
+    let jsonStr = jsonMatch[0].replace(/(?<=":[\s]*"[^"\\]*)(\n)(?=[^"]*")/g, '\\n');
+    let parsed;
+    try { parsed = JSON.parse(jsonStr); }
+    catch(e) { // last resort: strip all control chars and retry
+      jsonStr = jsonMatch[0].replace(/[\x00-\x09\x0B-\x1F\x7F]/g,'').replace(/\n/g,'\\n');
+      parsed = JSON.parse(jsonStr);
+    }
     // Guarantee contact details appear even if Groq omitted them
     if (contactParts.length && parsed.caption && !parsed.caption.includes(contactParts[0].slice(2, 10))) {
       parsed.caption = parsed.caption.trimEnd() + '\n' + contactParts.join('  |  ');
