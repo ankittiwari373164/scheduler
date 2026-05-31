@@ -4,13 +4,20 @@ const { indexRoute, idRoute } = require('../_lib/crud');
 const { getCollection } = require('../_lib/db');
 
 async function cascade(clientId) {
-  const bd = await getCollection('brandDetails');
-  const ma = await getCollection('metaAccounts');
-  const sp = await getCollection('scheduledPosts');
+  const numId = parseInt(clientId, 10);
+  const strId = String(clientId);
+  // Match clientId stored as either integer or string (legacy migration compat)
+  const filter = { $or: [{ clientId: numId }, { clientId: strId }] };
+
+  const [bd, ma, sp] = await Promise.all([
+    getCollection('brandDetails'),
+    getCollection('metaAccounts'),
+    getCollection('scheduledPosts')
+  ]);
   await Promise.all([
-    bd.deleteMany({ clientId }),
-    ma.deleteMany({ clientId }),
-    sp.deleteMany({ clientId })
+    bd.deleteMany(filter),
+    ma.deleteMany(filter),
+    sp.deleteMany(filter)
   ]);
 }
 

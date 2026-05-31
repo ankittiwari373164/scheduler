@@ -1710,7 +1710,8 @@ async function saveClient() {
   const driveCustomDays = [...document.querySelectorAll('#cDriveCustomDaysRow .day-pill.sel')].map(p => p.dataset.d);
 
   if (_editingClientId) {
-    const c = DB.clients.find(x => x.id === _editingClientId);
+    // Use loose integer comparison to handle legacy string IDs from MongoDB migration
+    const c = DB.clients.find(x => parseInt(x.id, 10) === parseInt(_editingClientId, 10));
     if (c) {
       c.name = name; c.businessType = document.getElementById('cType').value.trim();
       c.portfolioId = portfolioId; c.email = document.getElementById('cEmail').value.trim();
@@ -1719,7 +1720,7 @@ async function saveClient() {
       c.driveCustomDays = driveCustomDays;
       c.updatedAt = now;
       try { await Api.saveClient(c); } catch(e) { toast('Server save failed: ' + e.message, 'warn'); }
-      let bd = DB.brandDetails.find(b => b.clientId === c.id);
+      let bd = DB.brandDetails.find(b => parseInt(b.clientId, 10) === parseInt(c.id, 10));
       const brandContent = document.getElementById('cBrand').value.trim();
       if (bd) {
         bd.content = brandContent; bd.updatedAt = now;

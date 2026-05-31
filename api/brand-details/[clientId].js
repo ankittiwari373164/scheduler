@@ -8,36 +8,45 @@
 
 const { getCollection } = require('../_lib/db');
 const { readBody, jsonResponse, withCors, nextId } = require('../_lib/helpers');
+const { strip } = require('../_lib/crud');
 
-function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
+// Build a filter that matches clientId stored as EITHER integer or string.
+function clientIdFilter(clientId) {
+  const n = parseInt(clientId, 10);
+  const s = String(clientId);
+  if (Number.isNaN(n)) return { clientId: s };
+  return { $or: [{ clientId: n }, { clientId: s }] };
+}
 
 module.exports = withCors(async (req, res) => {
-  const clientId = parseInt(req.query.clientId);
+  const clientId = req.query.clientId;
   if (!clientId) return jsonResponse(res, 400, { error: 'clientId required' });
 
+  const numClientId = parseInt(clientId, 10);
   const col = await getCollection('brandDetails');
+  const filter = clientIdFilter(clientId);
 
   if (req.method === 'GET') {
-    const doc = await col.findOne({ clientId });
+    const doc = await col.findOne(filter);
     return jsonResponse(res, 200, strip(doc));
   }
 
   if (req.method === 'PUT' || req.method === 'PATCH') {
     const body = await readBody(req);
     const now = new Date().toISOString();
-    const existing = await col.findOne({ clientId });
+    const existing = await col.findOne(filter);
     if (existing) {
       const result = await col.findOneAndUpdate(
-        { clientId },
-        { $set: { ...body, clientId, updatedAt: now } },
+        filter,
+        { $set: { ...body, clientId: numClientId, updatedAt: now } },
         { returnDocument: 'after' }
       );
-      return jsonResponse(res, 200, strip(result?.value || (await col.findOne({ clientId }))));
+      return jsonResponse(res, 200, strip(result?.value || (await col.findOne(filter))));
     }
     const doc = {
       ...body,
       id: await nextId(getCollection, 'brandDetails'),
-      clientId,
+      clientId: numClientId,
       createdAt: now,
       updatedAt: now
     };
@@ -47,7 +56,7 @@ module.exports = withCors(async (req, res) => {
   }
 
   if (req.method === 'DELETE') {
-    const deleted = await col.findOneAndDelete({ clientId });
+    const deleted = await col.findOneAndDelete(filter);
     return jsonResponse(res, 200, { ok: true, deleted: strip(deleted?.value || deleted) });
   }
 
