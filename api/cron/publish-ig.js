@@ -38,12 +38,36 @@ async function pollContainer(containerId, accessToken, maxWaitMs = 120000) {
   throw new Error('IG container processing timed out');
 }
 
+// Look up the current Page access token from mf_config.metaPages,
+// falling back to the token stored on the job (legacy behaviour).
+async function getFreshToken(job) {
+  try {
+    const cfg = await getCollection('config');
+    const app = await cfg.findOne({ _key: 'app' });
+    if (app?.metaPages?.length) {
+      // Match by igId first, then by pageId
+      const page = app.metaPages.find(p =>
+        (p.igId && p.igId === job.igId) ||
+        (p.pageId && p.pageId === job.pageId)
+      );
+      if (page?.pageToken) return page.pageToken;
+    }
+  } catch (e) {
+    console.warn('Token lookup failed, using job.fbToken:', e.message);
+  }
+  return job.fbToken;
+}
+
 async function publishOne(job) {
+  // Always use the freshest token from mf_config (handles token upgrades
+  // that happened after the job was originally queued).
+  const token = await getFreshToken(job);
+
   // 1. Create container
   let containerId;
   if (job.mediaType === 'video') {
     const params = new URLSearchParams({
-      access_token: job.fbToken,
+      access_token: token,
       caption: job.caption,
       media_type: 'REELS',
       video_url: job.mediaUrl,
@@ -52,11 +76,11 @@ async function publishOne(job) {
     const r = await fetch(`${GRAPH}/${job.igId}/media`, { method: 'POST', body: params });
     const d = await r.json();
     if (d.error) throw new Error(`[${d.error.code}] ${d.error.message}`);
-    await pollContainer(d.id, job.fbToken, 120000);
+    await pollContainer(d.id, token, 120000);
     containerId = d.id;
   } else {
     const params = new URLSearchParams({
-      access_token: job.fbToken,
+      access_token: token,
       caption: job.caption,
       image_url: job.mediaUrl
     });
@@ -72,7 +96,7 @@ async function publishOne(job) {
     method: 'POST',
     body: new URLSearchParams({
       creation_id: containerId,
-      access_token: job.fbToken
+      access_token: token
     })
   });
   const pubData = await pubRes.json();

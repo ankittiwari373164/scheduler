@@ -98,6 +98,23 @@ module.exports = withCors(async (req, res) => {
   }
 
   // ─── Step 4: persist to mf_config ─────────────────────────
+  // Normalize to the schema the frontend expects:
+  //   { pageId, pageName, pageToken, igId, igName, igUsername,
+  //     businessName, businessId, category, tasks, profilePicture }
+  const normalizedPages = pages.map(p => ({
+    pageId:        p.id,
+    pageName:      p.name,
+    pageToken:     p.access_token,                   // permanent
+    category:      p.category || '',
+    tasks:         p.tasks || [],
+    igId:          p.instagram_business_account?.id || null,
+    igName:        p.instagram_business_account?.name || null,
+    igUsername:    p.instagram_business_account?.username || null,
+    profilePicture: p.instagram_business_account?.profile_picture_url || null,
+    businessName:  '',    // user assigns in UI
+    businessId:    ''     // user assigns in UI
+  }));
+
   try {
     const col = await getCollection('config');
     const now = new Date().toISOString();
@@ -110,14 +127,7 @@ module.exports = withCors(async (req, res) => {
           metaTokenType: 'long-lived-user',
           metaAppId: appId,
           // NOTE: we intentionally do NOT store appSecret in the DB.
-          metaPages: pages.map(p => ({
-            id: p.id,
-            name: p.name,
-            category: p.category,
-            access_token: p.access_token,     // permanent
-            tasks: p.tasks || [],
-            instagram_business_account: p.instagram_business_account || null
-          })),
+          metaPages: normalizedPages,
           metaConnected: true,
           updatedAt: now
         },
@@ -126,13 +136,12 @@ module.exports = withCors(async (req, res) => {
       { upsert: true }
     );
   } catch (e) {
-    // Don't fail the whole flow if DB save errors — return the tokens anyway
     return jsonResponse(res, 200, {
       ok: true,
       warning: 'Tokens minted but DB save failed: ' + e.message,
       longUserToken,
       longExpiresIn,
-      pages
+      pages: normalizedPages
     });
   }
 
@@ -141,8 +150,8 @@ module.exports = withCors(async (req, res) => {
     longUserToken,
     longExpiresIn,
     expiresAt: new Date(Date.now() + longExpiresIn * 1000).toISOString(),
-    pages,
-    pageCount: pages.length,
-    igAccountCount: pages.filter(p => p.instagram_business_account?.id).length
+    pages: normalizedPages,
+    pageCount: normalizedPages.length,
+    igAccountCount: normalizedPages.filter(p => p.igId).length
   });
 });
