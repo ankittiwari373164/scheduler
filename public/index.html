@@ -1279,7 +1279,7 @@ const Api = (function(){
       DB.metaAccounts = metaAccounts;
       DB.scheduledPosts = scheduledPosts;
       DB.postHistory = postHistory;
-      DB._nextId = Math.max(1, ...portfolios.map(p=>p.id||0), ...clients.map(c=>c.id||0), ...metaAccounts.map(m=>m.id||0), ...scheduledPosts.map(s=>s.id||0), ...postHistory.map(h=>h.id||0));
+      DB._nextId = Math.max(1, ...portfolios.map(p=>parseInt(p.id,10)||0), ...clients.map(c=>parseInt(c.id,10)||0), ...metaAccounts.map(m=>parseInt(m.id,10)||0), ...scheduledPosts.map(s=>parseInt(s.id,10)||0), ...postHistory.map(h=>parseInt(h.id,10)||0));
 
       CFG.groqKey         = config.groqKey || '';
       CFG.groqModel       = config.groqModel || 'llama-3.1-8b-instant';
@@ -1430,6 +1430,34 @@ async function init() {
       DB.portfolios.push({id:++DB._nextId, ...def, createdAt:new Date().toISOString()});
     }
   }
+
+  // ─── Normalise all IDs to integers ───────────────────────────
+  // Legacy localStorage data may have stored id/portfolioId/clientId as
+  // strings. Normalise everything to integers right after load so ALL
+  // in-memory comparisons (===) work correctly everywhere in the app.
+  (DB.portfolios || []).forEach(p => {
+    p.id = parseInt(p.id, 10) || p.id;
+  });
+  (DB.clients || []).forEach(c => {
+    c.id          = parseInt(c.id, 10)          || c.id;
+    c.portfolioId = parseInt(c.portfolioId, 10) || c.portfolioId;
+  });
+  (DB.metaAccounts || []).forEach(m => {
+    m.id       = parseInt(m.id, 10)       || m.id;
+    m.clientId = parseInt(m.clientId, 10) || m.clientId;
+  });
+  (DB.scheduledPosts || []).forEach(s => {
+    s.id       = parseInt(s.id, 10)       || s.id;
+    s.clientId = parseInt(s.clientId, 10) || s.clientId;
+  });
+  (DB.brandDetails || []).forEach(b => {
+    b.id       = parseInt(b.id, 10)       || b.id;
+    b.clientId = parseInt(b.clientId, 10) || b.clientId;
+  });
+  (DB.postHistory || []).forEach(h => {
+    h.id       = parseInt(h.id, 10)       || h.id;
+    h.clientId = parseInt(h.clientId, 10) || h.clientId;
+  });
 
   // Mark all loaded records as server-known so saves use PUT
   ['portfolios','clients','metaAccounts','scheduledPosts'].forEach(k => {
