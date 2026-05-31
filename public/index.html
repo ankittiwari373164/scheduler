@@ -1160,21 +1160,12 @@ let _editingClientId = null;
 let _editingBrandClientId = null;
 
 function persist() {
-  // Legacy localStorage write — kept ONLY as a temporary safety net during
-  // first migration. After the first successful save to the server, we
-  // clear this. The real source of truth is MongoDB.
-  try { localStorage.setItem('mf_db', JSON.stringify({DB, CFG})); } catch(e){}
-  // Debounced server save (see Api.saveAll below)
+  // Server is the only source of truth. Schedule a debounced save.
   Api.scheduleSyncSave();
 }
 function hydrate() {
-  try {
-    const raw = localStorage.getItem('mf_db');
-    if (!raw) return;
-    const {DB: d, CFG: c} = JSON.parse(raw);
-    Object.assign(DB, d);
-    Object.assign(CFG, c);
-  } catch(e){}
+  // No-op: data is loaded fresh from /api/* on every page load
+  // via Api.loadAll() in init(). No client-side persistence.
 }
 
 // ════════════════════════════════════════════════
@@ -1382,36 +1373,8 @@ const Api = (function(){
 })();
 
 async function init() {
-  // 1. Hydrate from localStorage immediately so something renders
-  hydrate();
-
-  // 2. Try to load fresh from server (overrides localStorage if successful)
-  const loaded = await Api.loadAll();
-
-  // 3. If server has nothing AND localStorage has data → offer migration
-  if (loaded && !DB.clients.length && !DB.portfolios.length) {
-    const oldRaw = localStorage.getItem('mf_db');
-    if (oldRaw) {
-      try {
-        const old = JSON.parse(oldRaw);
-        if ((old.DB?.clients?.length || 0) + (old.DB?.portfolios?.length || 0) > 0) {
-          if (confirm('Old localStorage data found. Migrate it to the new database now?')) {
-            const igQueue = JSON.parse(localStorage.getItem('mf_ig_queue') || '[]');
-            try {
-              const res = await Api.migrate({ DB: old.DB || {}, CFG: old.CFG || {}, igQueue });
-              toast(`✓ Migrated: ${JSON.stringify(res.migrated)}`, 'success');
-              // Reload from server now that data is there
-              await Api.loadAll();
-              localStorage.removeItem('mf_db');
-              localStorage.removeItem('mf_ig_queue');
-            } catch (e) {
-              toast('Migration failed: ' + e.message, 'error');
-            }
-          }
-        }
-      } catch (_) {}
-    }
-  }
+  // Load fresh from server every time. Server (MongoDB) is the only source of truth.
+  await Api.loadAll();
 
   if (!DB.portfolios.length) {
     const def = { userId:1, name:'Main Portfolio', description:'Default', color:'#6366f1' };
