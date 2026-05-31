@@ -581,7 +581,20 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           </div>
           <div class="form-row">
             <div class="form-group" style="margin:0"><label class="lbl">Start Date</label><input type="date" id="schStartDate"></div>
-            <div class="form-group" style="margin:0"><label class="lbl">Post Time</label><input type="time" id="schTime" value="09:00"></div>
+            <div class="form-group" style="margin:0">
+              <label class="lbl">Time Mode</label>
+              <select id="schTimeMode" onchange="onTimeModeChange()" style="margin:0">
+                <option value="fixed">Fixed time (same every post)</option>
+                <option value="random" selected>Random within window</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" id="timeFieldsRow">
+            <div class="form-group" style="margin:0"><label class="lbl" id="schTimeLbl">Window Start</label><input type="time" id="schTime" value="18:00"></div>
+            <div class="form-group" style="margin:0" id="schTimeEndGroup"><label class="lbl">Window End</label><input type="time" id="schTimeEnd" value="22:00"></div>
+          </div>
+          <div id="randomHint" style="font-size:11px;color:var(--t3);margin-top:6px;font-family:var(--mono);line-height:1.6">
+            🎲 Each post gets a unique random time between Start and End — looks more organic to the IG algorithm.
           </div>
         </div>
       </div>
@@ -1025,9 +1038,13 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <div class="drive-fmt-btn" id="dfmt_both" onclick="setDriveFormat('both',this)">🔀 Both</div>
             </div>
           </div>
-          <div style="flex:0 0 110px">
-            <label class="lbl">Post Time</label>
-            <input type="time" id="cDriveTime" value="09:00" style="margin:0">
+          <div style="flex:0 0 220px">
+            <label class="lbl">Post Time Window <span style="color:var(--t3);font-weight:400;font-size:10px">(random within range)</span></label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="time" id="cDriveTime" value="18:00" style="margin:0;flex:1" title="Window start">
+              <span style="color:var(--t3);font-size:11px">to</span>
+              <input type="time" id="cDriveTimeEnd" value="22:00" style="margin:0;flex:1" title="Window end (set same as start for fixed time)">
+            </div>
           </div>
         </div>
         <div class="drive-folder-guide">
@@ -1261,13 +1278,10 @@ const Api = (function(){
   // Load everything from the server into the global DB + CFG objects.
   async function loadAll() {
     try {
-      // Fetch clients once and reuse the result for brand-details lookup.
-      // Previously there were two separate /api/clients calls which could
-      // return results in different orders and waste a network round-trip.
-      const clients = await jget('/api/clients');
-      const [portfolios, brandDetails, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
+      const [portfolios, clients, brandDetails, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
         jget('/api/portfolios'),
-        Promise.all(clients.map(c => jget(`/api/brand-details/${c.id}`).catch(()=>null))).then(rs=>rs.filter(Boolean)),
+        jget('/api/clients'),
+        Promise.all((await jget('/api/clients')).map(c => jget(`/api/brand-details/${c.id}`).catch(()=>null))).then(rs=>rs.filter(Boolean)),
         jget('/api/meta-accounts'),
         jget('/api/scheduled-posts'),
         jget('/api/post-history'),
@@ -1279,7 +1293,7 @@ const Api = (function(){
       DB.metaAccounts = metaAccounts;
       DB.scheduledPosts = scheduledPosts;
       DB.postHistory = postHistory;
-      DB._nextId = Math.max(1, ...portfolios.map(p=>parseInt(p.id,10)||0), ...clients.map(c=>parseInt(c.id,10)||0), ...metaAccounts.map(m=>parseInt(m.id,10)||0), ...scheduledPosts.map(s=>parseInt(s.id,10)||0), ...postHistory.map(h=>parseInt(h.id,10)||0));
+      DB._nextId = Math.max(1, ...portfolios.map(p=>p.id||0), ...clients.map(c=>c.id||0), ...metaAccounts.map(m=>m.id||0), ...scheduledPosts.map(s=>s.id||0), ...postHistory.map(h=>h.id||0));
 
       CFG.groqKey         = config.groqKey || '';
       CFG.groqModel       = config.groqModel || 'llama-3.1-8b-instant';
@@ -1430,34 +1444,6 @@ async function init() {
       DB.portfolios.push({id:++DB._nextId, ...def, createdAt:new Date().toISOString()});
     }
   }
-
-  // ─── Normalise all IDs to integers ───────────────────────────
-  // Legacy localStorage data may have stored id/portfolioId/clientId as
-  // strings. Normalise everything to integers right after load so ALL
-  // in-memory comparisons (===) work correctly everywhere in the app.
-  (DB.portfolios || []).forEach(p => {
-    p.id = parseInt(p.id, 10) || p.id;
-  });
-  (DB.clients || []).forEach(c => {
-    c.id          = parseInt(c.id, 10)          || c.id;
-    c.portfolioId = parseInt(c.portfolioId, 10) || c.portfolioId;
-  });
-  (DB.metaAccounts || []).forEach(m => {
-    m.id       = parseInt(m.id, 10)       || m.id;
-    m.clientId = parseInt(m.clientId, 10) || m.clientId;
-  });
-  (DB.scheduledPosts || []).forEach(s => {
-    s.id       = parseInt(s.id, 10)       || s.id;
-    s.clientId = parseInt(s.clientId, 10) || s.clientId;
-  });
-  (DB.brandDetails || []).forEach(b => {
-    b.id       = parseInt(b.id, 10)       || b.id;
-    b.clientId = parseInt(b.clientId, 10) || b.clientId;
-  });
-  (DB.postHistory || []).forEach(h => {
-    h.id       = parseInt(h.id, 10)       || h.id;
-    h.clientId = parseInt(h.clientId, 10) || h.clientId;
-  });
 
   // Mark all loaded records as server-known so saves use PUT
   ['portfolios','clients','metaAccounts','scheduledPosts'].forEach(k => {
@@ -1713,7 +1699,8 @@ function openAddClient() {
   document.getElementById('clientSaveBtn').textContent = 'Save Client';
   document.getElementById('clientSaveBtn').onclick = saveClient;
   ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
-  document.getElementById('cDriveTime').value = '09:00';
+  document.getElementById('cDriveTime').value = '18:00';
+  const _endEl = document.getElementById('cDriveTimeEnd'); if (_endEl) _endEl.value = '22:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', f==='image'));
   // Reset custom-days pills
@@ -1733,22 +1720,24 @@ async function saveClient() {
   const driveLink = document.getElementById('cDriveLink').value.trim();
   const driveFreq = document.querySelector('.drive-freq-btn.active')?.id?.replace('dfreq_','') || '3x';
   const driveFmt  = document.querySelector('.drive-fmt-btn.active')?.id?.replace('dfmt_','') || 'image';
-  const driveTime = document.getElementById('cDriveTime').value || '09:00';
+  const driveTime = document.getElementById('cDriveTime').value || '18:00';
+  const driveTimeEnd = document.getElementById('cDriveTimeEnd')?.value || driveTime;
   // Read custom days (only meaningful when driveFreq === 'custom')
   const driveCustomDays = [...document.querySelectorAll('#cDriveCustomDaysRow .day-pill.sel')].map(p => p.dataset.d);
 
   if (_editingClientId) {
-    // Use loose integer comparison to handle legacy string IDs from MongoDB migration
-    const c = DB.clients.find(x => parseInt(x.id, 10) === parseInt(_editingClientId, 10));
+    const editId = typeof _editingClientId === 'number' ? _editingClientId : parseInt(_editingClientId, 10);
+    const c = DB.clients.find(x => x.id === editId);
     if (c) {
       c.name = name; c.businessType = document.getElementById('cType').value.trim();
       c.portfolioId = portfolioId; c.email = document.getElementById('cEmail').value.trim();
       c.phone = document.getElementById('cPhone').value.trim(); c.website = document.getElementById('cWebsite').value.trim();
-      c.driveLink = driveLink; c.driveFreq = driveFreq; c.driveFmt = driveFmt; c.driveTime = driveTime;
+      c.driveLink = driveLink; c.driveFreq = driveFreq; c.driveFmt = driveFmt;
+      c.driveTime = driveTime; c.driveTimeEnd = driveTimeEnd;
       c.driveCustomDays = driveCustomDays;
       c.updatedAt = now;
       try { await Api.saveClient(c); } catch(e) { toast('Server save failed: ' + e.message, 'warn'); }
-      let bd = DB.brandDetails.find(b => parseInt(b.clientId, 10) === parseInt(c.id, 10));
+      let bd = DB.brandDetails.find(b => b.clientId === c.id);
       const brandContent = document.getElementById('cBrand').value.trim();
       if (bd) {
         bd.content = brandContent; bd.updatedAt = now;
@@ -1758,7 +1747,7 @@ async function saveClient() {
       toast(`Client "${name}" updated`, 'success');
     }
   } else {
-    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, driveTime, driveCustomDays, createdAt:now, updatedAt:now};
+    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, driveTime, driveTimeEnd, driveCustomDays, createdAt:now, updatedAt:now};
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
     if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
@@ -1766,58 +1755,77 @@ async function saveClient() {
   }
   persist();
   closeModal('clientModal');
+  _editingClientId = null;   // clear edit state so next "Add" opens fresh
   renderAll();
   renderDriveBotPanel();
 }
 
-async function editClient(id) {
-  // Convert id to number to ensure type-safe comparisons throughout.
-  const numId = parseInt(id, 10);
+function editClient(id) {
+  // Coerce to number — onclick attributes can pass strings
+  const numId = typeof id === 'number' ? id : parseInt(id, 10);
+  const c = DB.clients.find(x => x.id === numId);
 
-  // Always fetch the latest client data and brand details fresh from the
-  // server so the modal always reflects what is actually stored in MongoDB,
-  // not a potentially stale or type-mismatched in-memory copy.
-  let c, bd;
-  try {
-    [c, bd] = await Promise.all([
-      fetch(`/api/clients/${numId}`).then(r => r.ok ? r.json() : null),
-      fetch(`/api/brand-details/${numId}`).then(r => r.ok ? r.json() : null).catch(() => null)
-    ]);
-  } catch(e) {
-    // Fallback to in-memory if the server fetch fails.
-    c = DB.clients.find(x => parseInt(x.id, 10) === numId) || null;
-    bd = DB.brandDetails.find(b => parseInt(b.clientId, 10) === numId) || null;
+  if (!c) {
+    console.warn('[editClient] client not found, id=', id, 'numId=', numId,
+                 'available ids=', DB.clients.map(x => x.id));
+    toast('Could not load this client — refresh and try again', 'error');
+    return;
   }
 
-  if (!c) { toast('Client not found', 'error'); return; }
+  console.log('[editClient] editing', c.name, '(id=' + c.id + ')');
+  _editingClientId = c.id;
 
-  // Keep the in-memory record in sync with what the server has.
-  const memIdx = DB.clients.findIndex(x => parseInt(x.id, 10) === numId);
-  if (memIdx !== -1) Object.assign(DB.clients[memIdx], c);
+  // ─── HARD RESET every field first, then populate from `c` ───
+  // This guarantees no stale data leaks from a previous edit.
+  const fields = ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'];
+  fields.forEach(fId => { const el = document.getElementById(fId); if (el) el.value = ''; });
+  document.getElementById('cDriveTime').value    = '18:00';
+  const _endEl = document.getElementById('cDriveTimeEnd');
+  if (_endEl) _endEl.value = '22:00';
+  // Reset all toggle states
+  ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.remove('active'));
+  ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.remove('active'));
+  document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
+  const customRow = document.getElementById('cDriveCustomDaysRow');
+  if (customRow) customRow.style.display = 'none';
 
-  _editingClientId = numId;
-  document.getElementById('clientModalTitle').textContent = 'Edit Client';
+  // ─── Now populate from the actual client `c` ───
+  document.getElementById('clientModalTitle').textContent = 'Edit Client: ' + c.name;
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
-  document.getElementById('cName').value = c.name || '';
-  document.getElementById('cType').value = c.businessType || '';
-  document.getElementById('cEmail').value = c.email || '';
-  document.getElementById('cPhone').value = c.phone || '';
-  document.getElementById('cWebsite').value = c.website || '';
+  document.getElementById('clientSaveBtn').onclick = saveClient;   // make sure handler is correct mode
+
+  document.getElementById('cName').value     = c.name || '';
+  document.getElementById('cType').value     = c.businessType || '';
+  document.getElementById('cEmail').value    = c.email || '';
+  document.getElementById('cPhone').value    = c.phone || '';
+  document.getElementById('cWebsite').value  = c.website || '';
   document.getElementById('cDriveLink').value = c.driveLink || '';
-  document.getElementById('cDriveTime').value = c.driveTime || '09:00';
-  ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', (c.driveFreq||'3x')===f));
-  ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', (c.driveFmt||'image')===f));
-  // Restore custom-days selection
+  document.getElementById('cDriveTime').value = c.driveTime || '18:00';
+  if (_endEl) _endEl.value = c.driveTimeEnd || c.driveTime || '22:00';
+
+  // Frequency + format toggles
+  const driveFreq = c.driveFreq || '3x';
+  const driveFmt  = c.driveFmt  || 'image';
+  document.getElementById('dfreq_' + driveFreq)?.classList.add('active');
+  document.getElementById('dfmt_'  + driveFmt)?.classList.add('active');
+
+  // Custom days
   const customDays = c.driveCustomDays || [];
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => {
     p.classList.toggle('sel', customDays.includes(p.dataset.d));
   });
-  const customRow = document.getElementById('cDriveCustomDaysRow');
-  if (customRow) customRow.style.display = (c.driveFreq === 'custom') ? 'block' : 'none';
-  document.getElementById('cBrand').value = (bd && bd.content) ? bd.content : '';
+  if (customRow) customRow.style.display = (driveFreq === 'custom') ? 'block' : 'none';
+
+  // Brand TXT
+  const bd = DB.brandDetails.find(b => b.clientId === c.id);
+  document.getElementById('cBrand').value = bd ? bd.content : '';
+
+  // Portfolio dropdown — populate options and pre-select
   const sel = document.getElementById('cPortfolio');
-  const cPortfolioId = parseInt(c.portfolioId, 10);
-  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${parseInt(p.id,10)===cPortfolioId?'selected':''}>${p.name}</option>`).join('');
+  sel.innerHTML = DB.portfolios
+    .map(p => `<option value="${p.id}" ${p.id === c.portfolioId ? 'selected' : ''}>${p.name}</option>`)
+    .join('');
+
   openModal('clientModal');
 }
 
@@ -2176,14 +2184,35 @@ function getActiveDays() {
   return DAYS_MAP[SCH.freq] || DAYS_MAP.mwf;
 }
 
+// Helper — pick a random minute between two HH:MM strings
+function pickRandomTime(startHHMM, endHHMM) {
+  const [sh, sm] = startHHMM.split(':').map(n => parseInt(n));
+  const [eh, em] = endHHMM.split(':').map(n => parseInt(n));
+  const startMin = sh * 60 + sm;
+  let endMin = eh * 60 + em;
+  if (endMin <= startMin) endMin = startMin + 60; // safety: 1hr window if user inverted
+  const pickedMin = startMin + Math.floor(Math.random() * (endMin - startMin + 1));
+  return { hh: Math.floor(pickedMin / 60), mm: pickedMin % 60 };
+}
+
+function getScheduleTimeForPost() {
+  const mode = document.getElementById('schTimeMode')?.value || 'random';
+  const startT = document.getElementById('schTime')?.value || '18:00';
+  if (mode === 'random') {
+    const endT = document.getElementById('schTimeEnd')?.value || '22:00';
+    return pickRandomTime(startT, endT);
+  }
+  const [hh, mm] = startT.split(':').map(n => parseInt(n));
+  return { hh, mm };
+}
+
 function calcScheduleDates(count) {
   // "Pick specific dates" mode — return the user's picked dates verbatim
   if (SCH.freq === 'dates') {
-    const postTime = document.getElementById('schTime')?.value || '09:00';
-    const [hh, mm] = postTime.split(':').map(n => parseInt(n));
     const sorted = (SCH.customDates || []).slice().sort();
     return sorted.slice(0, count).map(dStr => {
       const d = new Date(dStr + 'T00:00:00');
+      const { hh, mm } = getScheduleTimeForPost();   // independent random time per post
       d.setHours(hh, mm, 0, 0);
       return d;
     });
@@ -2192,17 +2221,40 @@ function calcScheduleDates(count) {
   const days = getActiveDays();
   if (!days || !days.length) return [];
   const startDate = document.getElementById('schStartDate').value;
-  const postTime = document.getElementById('schTime').value || '09:00';
   if (!startDate) return [];
   const dates = [];
-  let d = new Date(startDate + 'T' + postTime);
+  let d = new Date(startDate + 'T00:00:00');
+  const startBoundary = new Date(startDate + 'T00:00:00');
   while (dates.length < count) {
     const dayName = ALL_DAYS[d.getDay() === 0 ? 6 : d.getDay() - 1];
-    if (days.includes(dayName)) dates.push(new Date(d));
+    if (days.includes(dayName)) {
+      const out = new Date(d);
+      const { hh, mm } = getScheduleTimeForPost();   // independent random time per post
+      out.setHours(hh, mm, 0, 0);
+      dates.push(out);
+    }
     d.setDate(d.getDate() + 1);
-    if (d - new Date(startDate + 'T' + postTime) > 1000*60*60*24*90) break;
+    if (d - startBoundary > 1000*60*60*24*90) break;
   }
   return dates;
+}
+
+// Toggle UI when time mode dropdown changes
+function onTimeModeChange() {
+  const mode = document.getElementById('schTimeMode').value;
+  const endGroup = document.getElementById('schTimeEndGroup');
+  const hint = document.getElementById('randomHint');
+  const lbl = document.getElementById('schTimeLbl');
+  if (mode === 'random') {
+    if (endGroup) endGroup.style.display = '';
+    if (hint) hint.style.display = '';
+    if (lbl) lbl.textContent = 'Window Start';
+  } else {
+    if (endGroup) endGroup.style.display = 'none';
+    if (hint) hint.style.display = 'none';
+    if (lbl) lbl.textContent = 'Post Time';
+  }
+  updateScheduleSummary();
 }
 
 // ─── Mini-calendar for "pick specific dates" mode ────────────
@@ -4070,15 +4122,35 @@ async function processDriveClient(client) {
     freqDays = ['Mon','Wed','Fri'];
   }
   botLog(`📅 ${client.name}: posting on ${freqDays.join(', ')}`, 'info');
-  const postTimeParts = (client.driveTime||'09:00').split(':');
+
+  // Random time window — each post gets an independent random time between
+  // driveTime (start) and driveTimeEnd (end). If they're equal, it's fixed.
+  const startTime = client.driveTime || '18:00';
+  const endTime   = client.driveTimeEnd || startTime;
+  const randomTimeInWindow = () => {
+    const [sh, sm] = startTime.split(':').map(n => parseInt(n));
+    const [eh, em] = endTime.split(':').map(n => parseInt(n));
+    const startMin = sh * 60 + sm;
+    let endMin = eh * 60 + em;
+    if (endMin <= startMin) endMin = startMin; // fixed-time fallback
+    const picked = startMin === endMin ? startMin : startMin + Math.floor(Math.random() * (endMin - startMin + 1));
+    return { hh: Math.floor(picked / 60), mm: picked % 60 };
+  };
+  if (startTime !== endTime) {
+    botLog(`🎲 ${client.name}: random posting window ${startTime}–${endTime}`, 'info');
+  }
+
   const today = new Date();
-  let cursor = new Date(today);
-  cursor.setHours(parseInt(postTimeParts[0]),parseInt(postTimeParts[1]),0,0);
-  if (cursor <= today) cursor.setDate(cursor.getDate()+1); // don't schedule in the past
+  const cursor = new Date(today); cursor.setHours(0,0,0,0); cursor.setDate(cursor.getDate()+1); // start from tomorrow midnight
   const scheduleDates = [];
   while (scheduleDates.length < newFiles.length) {
     const dayName = ALL_DAYS[cursor.getDay()===0?6:cursor.getDay()-1];
-    if (freqDays.includes(dayName)) scheduleDates.push(new Date(cursor));
+    if (freqDays.includes(dayName)) {
+      const slot = new Date(cursor);
+      const { hh, mm } = randomTimeInWindow();
+      slot.setHours(hh, mm, 0, 0);
+      scheduleDates.push(slot);
+    }
     cursor.setDate(cursor.getDate()+1);
     if (cursor - today > 1000*60*60*24*90) break;
   }
