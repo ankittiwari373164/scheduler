@@ -1407,8 +1407,10 @@ const Api = (function(){
     return all.find(c => c.id === id || c.id === parseInt(id)) || null;
   }
   async function getBrandDetails(clientId) {
-    return jget(`/api/brand-details/${clientId}`).catch(() => null);
+    const r = await jget(`/api/brand-details/${clientId}`).catch(() => null);
+    return r;
   }
+
 
   return {
     loadAll, saveAll, scheduleSyncSave,
@@ -1737,9 +1739,21 @@ async function saveClient() {
     }
   } else {
     const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, driveTime, driveCustomDays, createdAt:now, updatedAt:now};
+    // Save to server FIRST to get the real server-assigned id, THEN save brand details
+    // (wrapPushSync updates client.id async which would give brandDetails the wrong clientId)
+    try {
+      const saved = await Api.saveClient(client);
+      if (saved && saved.id) client.id = saved.id;
+      client._serverKnown = true;
+    } catch(e) { toast('Server save failed: ' + e.message, 'warn'); }
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
-    if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
+    if (brandContent) {
+      const bd = {id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now};
+      DB.brandDetails.push(bd);
+      // Also save brand details directly with the confirmed real clientId
+      try { await Api.saveBrandDetails(client.id, { content: brandContent, fileName: bd.fileName }); } catch(_){}
+    }
     toast(`Client "${name}" added`, 'success');
   }
   persist();
@@ -1749,11 +1763,12 @@ async function saveClient() {
 }
 
 async function editClient(id) {
-  _editingClientId = id;
+  // id here is whatever was rendered in the card onclick — may be stale local id
+  // So: fetch ALL clients fresh, find by name match as primary key (names are unique per user)
+  // and use the server's real id going forward
   document.getElementById('clientModalTitle').textContent = 'Edit Client';
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
   document.getElementById('clientSaveBtn').onclick = saveClient;
-  // Clear all fields immediately while fetching
   ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(fid => { const el=document.getElementById(fid); if(el) el.value=''; });
   document.getElementById('cDriveTime').value = '09:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
@@ -1762,27 +1777,26 @@ async function editClient(id) {
   const _cr = document.getElementById('cDriveCustomDaysRow');
   if (_cr) _cr.style.display = 'none';
   openModal('clientModal');
-  // Fetch FRESH data from server — never rely on potentially stale local DB cache
-  let c, bd;
+  // Step 1: Find the client name from local cache using the passed id
+  const localClient = DB.clients.find(x => x.id === id || x.id === parseInt(id));
+  if (!localClient) { toast('Client not found', 'error'); return; }
+  const clientName = localClient.name;
+  // Step 2: Fetch ALL clients fresh from server, find by NAME (not id) to avoid stale-id mismatch
+  let allClients, c, bd;
   try {
-    [c, bd] = await Promise.all([
-      Api.getClient(id),
-      Api.getBrandDetails(id)
-    ]);
-  } catch(e) {
-    toast('Failed to load client: ' + e.message, 'error');
-    return;
-  }
-  if (!c || (Array.isArray(c) && !c.length)) {
-    toast('Client not found', 'error');
-    return;
-  }
-  // Server returns array from list endpoint — unwrap if needed
-  if (Array.isArray(c)) c = c[0];
-  // Update local cache with fresh server data
-  const localIdx = DB.clients.findIndex(x => x.id === id);
-  if (localIdx >= 0) DB.clients[localIdx] = { ...DB.clients[localIdx], ...c };
-  // Populate form with guaranteed-fresh data
+    allClients = await jget('/api/clients');
+  } catch(e) { toast('Failed to load clients: ' + e.message, 'error'); return; }
+  // Match by name first (most reliable), fallback to id
+  c = allClients.find(x => x.name === clientName) || allClients.find(x => x.id === id || x.id === parseInt(id));
+  if (!c) { toast('Client not found on server', 'error'); return; }
+  // Use the REAL server id from now on
+  const realId = c.id;
+  _editingClientId = realId;
+  // Update local DB cache with correct id
+  DB.clients = allClients;
+  // Step 3: Fetch brand details using the REAL server id
+  try { bd = await jget(`/api/brand-details/${realId}`).catch(() => null); } catch(_) { bd = null; }
+  // Populate form
   document.getElementById('cName').value = c.name || '';
   document.getElementById('cType').value = c.businessType || '';
   document.getElementById('cEmail').value = c.email || '';
