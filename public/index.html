@@ -1261,16 +1261,19 @@ const Api = (function(){
   // Load everything from the server into the global DB + CFG objects.
   async function loadAll() {
     try {
-      // Fetch clients once, reuse the same list for brandDetails
-      const clients = await jget('/api/clients');
-      const [portfolios, brandDetails, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
+      // Fetch clients once, then use the result for brand-details lookup
+      const [portfolios, clients, metaAccounts, scheduledPosts, postHistory, config] = await Promise.all([
         jget('/api/portfolios'),
-        Promise.all(clients.map(c => jget(`/api/brand-details/${c.id}`).catch(()=>null))).then(rs=>rs.filter(Boolean)),
+        jget('/api/clients'),
         jget('/api/meta-accounts'),
         jget('/api/scheduled-posts'),
         jget('/api/post-history'),
         jget('/api/config')
       ]);
+      // Now fetch brand details using the already-loaded clients list (no double-fetch)
+      const brandDetails = (await Promise.all(
+        clients.map(c => jget(`/api/brand-details/${c.id}`).catch(() => null))
+      )).filter(Boolean);
       DB.portfolios = portfolios;
       DB.clients = clients;
       DB.brandDetails = brandDetails;
@@ -1401,22 +1404,11 @@ const Api = (function(){
     return jpost('/api/migrate', payload);
   }
 
-  async function getClient(id) {
-    // Fetch all clients and find the one matching id (idRoute doesn't support GET)
-    const all = await jget('/api/clients');
-    return all.find(c => c.id === id || c.id === parseInt(id)) || null;
-  }
-  async function getBrandDetails(clientId) {
-    const r = await jget(`/api/brand-details/${clientId}`).catch(() => null);
-    return r;
-  }
-
-
   return {
     loadAll, saveAll, scheduleSyncSave,
     savePortfolio, deletePortfolio,
-    saveClient, deleteClient, getClient,
-    saveBrandDetails, getBrandDetails,
+    saveClient, deleteClient,
+    saveBrandDetails,
     saveMetaAccount, deleteMetaAccount,
     saveScheduledPost,
     savePostHistory,
@@ -1638,8 +1630,8 @@ let _activePortfolio = null;
 function renderSidebarPortfolios() {
   const el = document.getElementById('sidebarPortfolios');
   el.innerHTML = DB.portfolios.map(p => {
-    const cnt = DB.clients.filter(c => c.portfolioId === p.id).length;
-    const isActive = _activePortfolio === p.id;
+    const cnt = DB.clients.filter(c => parseInt(c.portfolioId) === parseInt(p.id)).length;
+    const isActive = parseInt(_activePortfolio) === parseInt(p.id);
     return `<div class="port-item ${isActive?'active':''}" onclick="selectPortfolio(${p.id})">
       <div class="port-dot" style="background:${p.color}22;color:${p.color}">${p.name[0].toUpperCase()}</div>
       <div class="port-meta">
@@ -1679,7 +1671,7 @@ function renderPortManage() {
   const el = document.getElementById('portManageList');
   if (!el) return;
   el.innerHTML = DB.portfolios.map(p => {
-    const cnt = DB.clients.filter(c => c.portfolioId === p.id).length;
+    const cnt = DB.clients.filter(c => parseInt(c.portfolioId) === parseInt(p.id)).length;
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 13px;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r1)">
       <div class="port-dot" style="background:${p.color}22;color:${p.color};width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700">${p.name[0]}</div>
       <div style="flex:1"><div style="font-size:13px;font-weight:600">${p.name}</div>${p.description ? `<div style="font-size:11px;color:var(--t3)">${p.description}</div>` : ''}</div>
@@ -1702,7 +1694,7 @@ function openAddClient() {
   const customRow = document.getElementById('cDriveCustomDaysRow');
   if (customRow) customRow.style.display = 'none';
   const sel = document.getElementById('cPortfolio');
-  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${p.id===(_activePortfolio||DB.portfolios[0]?.id)?'selected':''}>${p.name}</option>`).join('');
+  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${parseInt(p.id)===parseInt(_activePortfolio||DB.portfolios[0]?.id)?'selected':''}>${p.name}</option>`).join('');
   openModal('clientModal');
 }
 
@@ -1719,7 +1711,7 @@ async function saveClient() {
   const driveCustomDays = [...document.querySelectorAll('#cDriveCustomDaysRow .day-pill.sel')].map(p => p.dataset.d);
 
   if (_editingClientId) {
-    const c = DB.clients.find(x => x.id === _editingClientId);
+    const c = DB.clients.find(x => parseInt(x.id) === parseInt(_editingClientId));
     if (c) {
       c.name = name; c.businessType = document.getElementById('cType').value.trim();
       c.portfolioId = portfolioId; c.email = document.getElementById('cEmail').value.trim();
@@ -1728,7 +1720,7 @@ async function saveClient() {
       c.driveCustomDays = driveCustomDays;
       c.updatedAt = now;
       try { await Api.saveClient(c); } catch(e) { toast('Server save failed: ' + e.message, 'warn'); }
-      let bd = DB.brandDetails.find(b => b.clientId === c.id);
+      let bd = DB.brandDetails.find(b => parseInt(b.clientId) === parseInt(c.id));
       const brandContent = document.getElementById('cBrand').value.trim();
       if (bd) {
         bd.content = brandContent; bd.updatedAt = now;
@@ -1739,21 +1731,9 @@ async function saveClient() {
     }
   } else {
     const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, driveTime, driveCustomDays, createdAt:now, updatedAt:now};
-    // Save to server FIRST to get the real server-assigned id, THEN save brand details
-    // (wrapPushSync updates client.id async which would give brandDetails the wrong clientId)
-    try {
-      const saved = await Api.saveClient(client);
-      if (saved && saved.id) client.id = saved.id;
-      client._serverKnown = true;
-    } catch(e) { toast('Server save failed: ' + e.message, 'warn'); }
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
-    if (brandContent) {
-      const bd = {id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now};
-      DB.brandDetails.push(bd);
-      // Also save brand details directly with the confirmed real clientId
-      try { await Api.saveBrandDetails(client.id, { content: brandContent, fileName: bd.fileName }); } catch(_){}
-    }
+    if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
     toast(`Client "${name}" added`, 'success');
   }
   persist();
@@ -1763,41 +1743,14 @@ async function saveClient() {
 }
 
 async function editClient(id) {
-  // id here is whatever was rendered in the card onclick — may be stale local id
-  // So: fetch ALL clients fresh, find by name match as primary key (names are unique per user)
-  // and use the server's real id going forward
+  // Normalise id to integer to handle string/number type mismatches from MongoDB
+  const numId = parseInt(id);
+  const c = DB.clients.find(x => parseInt(x.id) === numId);
+  if (!c) { toast('Client not found — please refresh the page', 'error'); return; }
+  _editingClientId = c.id; // store the actual id from the DB object
   document.getElementById('clientModalTitle').textContent = 'Edit Client';
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
-  document.getElementById('clientSaveBtn').onclick = saveClient;
-  ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(fid => { const el=document.getElementById(fid); if(el) el.value=''; });
-  document.getElementById('cDriveTime').value = '09:00';
-  ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
-  ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', f==='image'));
-  document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
-  const _cr = document.getElementById('cDriveCustomDaysRow');
-  if (_cr) _cr.style.display = 'none';
-  openModal('clientModal');
-  // Step 1: Find the client name from local cache using the passed id
-  const localClient = DB.clients.find(x => x.id === id || x.id === parseInt(id));
-  if (!localClient) { toast('Client not found', 'error'); return; }
-  const clientName = localClient.name;
-  // Step 2: Fetch ALL clients fresh from server, find by NAME (not id) to avoid stale-id mismatch
-  let allClients, c, bd;
-  try {
-    allClients = await jget('/api/clients');
-  } catch(e) { toast('Failed to load clients: ' + e.message, 'error'); return; }
-  // Match by name first (most reliable), fallback to id
-  c = allClients.find(x => x.name === clientName) || allClients.find(x => x.id === id || x.id === parseInt(id));
-  if (!c) { toast('Client not found on server', 'error'); return; }
-  // Use the REAL server id from now on
-  const realId = c.id;
-  _editingClientId = realId;
-  // Update local DB cache with correct id
-  DB.clients = allClients;
-  // Step 3: Fetch brand details using the REAL server id
-  try { bd = await jget(`/api/brand-details/${realId}`).catch(() => null); } catch(_) { bd = null; }
-  // Populate form
-  document.getElementById('cName').value = c.name || '';
+  document.getElementById('cName').value = c.name;
   document.getElementById('cType').value = c.businessType || '';
   document.getElementById('cEmail').value = c.email || '';
   document.getElementById('cPhone').value = c.phone || '';
@@ -1806,16 +1759,34 @@ async function editClient(id) {
   document.getElementById('cDriveTime').value = c.driveTime || '09:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', (c.driveFreq||'3x')===f));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', (c.driveFmt||'image')===f));
+  // Restore custom-days selection
   const customDays = c.driveCustomDays || [];
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => {
     p.classList.toggle('sel', customDays.includes(p.dataset.d));
   });
   const customRow = document.getElementById('cDriveCustomDaysRow');
   if (customRow) customRow.style.display = (c.driveFreq === 'custom') ? 'block' : 'none';
-  document.getElementById('cBrand').value = bd ? bd.content : '';
+  // Fetch brand details fresh from server for this specific client to avoid stale/mismatched data
+  let brandContent = '';
+  try {
+    const freshBd = await fetch(`/api/brand-details/${c.id}`).then(r => r.ok ? r.json() : null);
+    if (freshBd && freshBd.content) {
+      // Update local cache with type-safe lookup
+      const localBd = DB.brandDetails.find(b => parseInt(b.clientId) === numId);
+      if (localBd) { localBd.content = freshBd.content; }
+      else { DB.brandDetails.push({ ...freshBd, clientId: c.id }); }
+      brandContent = freshBd.content;
+    }
+  } catch(e) {
+    // Fall back to local cache on network error
+    const bd = DB.brandDetails.find(b => parseInt(b.clientId) === numId);
+    brandContent = bd ? bd.content : '';
+  }
+  document.getElementById('cBrand').value = brandContent;
   const sel = document.getElementById('cPortfolio');
-  const portfolioId = parseInt(c.portfolioId);
-  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${p.id===portfolioId?'selected':''}>${p.name}</option>`).join('');
+  // Use parseInt on both sides to handle string/number type mismatch for portfolioId
+  sel.innerHTML = DB.portfolios.map(p => `<option value="${p.id}" ${parseInt(p.id)===parseInt(c.portfolioId)?'selected':''}>${p.name}</option>`).join('');
+  openModal('clientModal');
 }
 
 async function deleteClient(id) {
@@ -1836,9 +1807,10 @@ async function deleteClient(id) {
 }
 
 function openBrandEdit(clientId) {
-  _editingBrandClientId = clientId;
-  const c = DB.clients.find(x => x.id === clientId);
-  const bd = DB.brandDetails.find(b => b.clientId === clientId);
+  const numClientId = parseInt(clientId);
+  _editingBrandClientId = numClientId;
+  const c = DB.clients.find(x => parseInt(x.id) === numClientId);
+  const bd = DB.brandDetails.find(b => parseInt(b.clientId) === numClientId);
   document.getElementById('brandModalTitle').textContent = `Brand Info — ${c?.name}`;
   document.getElementById('brandEditArea').value = bd ? bd.content : '';
   openModal('brandModal');
@@ -1848,8 +1820,8 @@ async function saveBrandEdit() {
   if (!_editingBrandClientId) return;
   const content = document.getElementById('brandEditArea').value.trim();
   const now = new Date().toISOString();
-  let bd = DB.brandDetails.find(b => b.clientId === _editingBrandClientId);
-  const c = DB.clients.find(x => x.id === _editingBrandClientId);
+  let bd = DB.brandDetails.find(b => parseInt(b.clientId) === parseInt(_editingBrandClientId));
+  const c = DB.clients.find(x => parseInt(x.id) === parseInt(_editingBrandClientId));
   if (bd) { bd.content = content; bd.updatedAt = now; }
   else { bd = {id:++DB._nextId, clientId:_editingBrandClientId, content, fileName:`${c?.name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now}; DB.brandDetails.push(bd); }
   try {
@@ -1874,7 +1846,7 @@ function scheduleForClient(id) {
 function renderClientGrid() {
   const grid = document.getElementById('clientGrid');
   let clients = DB.clients;
-  if (_activePortfolio) clients = clients.filter(c => c.portfolioId === _activePortfolio);
+  if (_activePortfolio) clients = clients.filter(c => parseInt(c.portfolioId) === parseInt(_activePortfolio));
   if (!clients.length) {
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><span class="empty-icon">🏢</span><div class="empty-title">No clients yet${_activePortfolio?' in this portfolio':''}</div><div class="empty-sub">Add a client to start scheduling</div></div>`;
     return;
@@ -1884,7 +1856,7 @@ function renderClientGrid() {
     const bd = DB.brandDetails.find(b => b.clientId === c.id);
     const ma = DB.metaAccounts.filter(m => m.clientId === c.id && m.isActive);
     const sched = DB.scheduledPosts.filter(s => s.clientId === c.id);
-    const p = DB.portfolios.find(x => x.id === c.portfolioId);
+    const p = DB.portfolios.find(x => parseInt(x.id) === parseInt(c.portfolioId));
     const hasDrive = !!c.driveLink;
     const fmtLabel = {image:'🖼 Img', reel:'🎬 Reel', both:'🔀 Both'}[c.driveFmt] || '';
     return `<div class="client-card">
@@ -2049,7 +2021,7 @@ function populateClientSelect() {
   if (!sel) return;
   sel.innerHTML = '<option value="">— No client / skip brand AI —</option>' +
     DB.clients.map(c => {
-      const p = DB.portfolios.find(x => x.id === c.portfolioId);
+      const p = DB.portfolios.find(x => parseInt(x.id) === parseInt(c.portfolioId));
       return `<option value="${c.id}">${c.name}${p?' ('+p.name+')':''}</option>`;
     }).join('');
   if (cur) sel.value = cur;
