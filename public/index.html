@@ -3170,6 +3170,18 @@ async function publishToMeta() {
     let fileSucceeded = false;
 
     for (const target of targets) {
+      // Always look up the freshest Page token from CFG.metaPages right before
+      // posting — handles the case where the user upgraded tokens AFTER selecting
+      // their targets in Step 1. The cached `target.token` may be stale.
+      const livePage = CFG.metaPages.find(p =>
+        p.pageId === target.accountId ||
+        p.pageId === target.pageId ||
+        p.igId === target.accountId
+      );
+      if (livePage?.pageToken) {
+        target.token = livePage.pageToken;
+      }
+
       const isIG = target.accountType === 'instagram_business';
       const ico = isIG ? '📸' : '📘';
       toast(`${ico} Posting "${f.name}" → ${target.accountName}…`, 'info');
