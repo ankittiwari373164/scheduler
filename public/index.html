@@ -1743,7 +1743,18 @@ function editClient(id) {
   if (!c) return;
   _editingClientId = id;
   document.getElementById('clientModalTitle').textContent = 'Edit Client';
+  // FIX: rewire save button so it always saves the correct client
   document.getElementById('clientSaveBtn').textContent = 'Update Client';
+  document.getElementById('clientSaveBtn').onclick = saveClient;
+  // FIX: clear ALL fields first so stale data from a previous edit doesn't bleed through
+  ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(fid => { const el=document.getElementById(fid); if(el) el.value=''; });
+  document.getElementById('cDriveTime').value = '09:00';
+  ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
+  ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', f==='image'));
+  document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
+  const _cr = document.getElementById('cDriveCustomDaysRow');
+  if (_cr) _cr.style.display = 'none';
+  // Now populate with this client's actual data
   document.getElementById('cName').value = c.name;
   document.getElementById('cType').value = c.businessType || '';
   document.getElementById('cEmail').value = c.email || '';
@@ -1753,7 +1764,6 @@ function editClient(id) {
   document.getElementById('cDriveTime').value = c.driveTime || '09:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', (c.driveFreq||'3x')===f));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', (c.driveFmt||'image')===f));
-  // Restore custom-days selection
   const customDays = c.driveCustomDays || [];
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => {
     p.classList.toggle('sel', customDays.includes(p.dataset.d));
