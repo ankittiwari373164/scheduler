@@ -866,6 +866,48 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           </div>
         </div>
 
+        <!-- Permanent token upgrade -->
+        <div class="card" style="margin-bottom:16px;border-color:rgba(34,197,94,.3)">
+          <div class="card-title" style="display:flex;align-items:center;gap:8px">
+            <span>🔒</span> Upgrade to Permanent Tokens
+            <span class="pill green" style="font-size:10px">Never expires</span>
+          </div>
+          <div class="card-sub">
+            Short-lived tokens expire in 1 hour. This converts your token into:
+            (1) a 60-day user token, and (2) <strong>permanent per-Page tokens that never expire</strong>.
+            Each Page token works forever — no refresh needed.
+          </div>
+
+          <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:var(--r1);padding:13px 15px;margin-bottom:14px;font-size:11px;color:var(--t2);line-height:1.9">
+            <strong style="color:var(--green)">Before using this you need a Meta App with App Secret:</strong><br>
+            1. Go to <a href="https://developers.facebook.com/apps" target="_blank" style="color:var(--a2)">developers.facebook.com/apps →</a> Create App → Business → name it<br>
+            2. Add products: <strong>Facebook Login for Business</strong> + <strong>Instagram</strong><br>
+            3. App settings → Basic → copy <strong>App ID</strong> and click "Show" to get <strong>App Secret</strong><br>
+            4. Paste short-lived token (from Graph API Explorer, with all permissions) below, along with App ID + App Secret
+          </div>
+
+          <div class="form-group" style="margin-bottom:10px">
+            <label class="lbl">Short-Lived User Token</label>
+            <input type="password" id="tokUpShort" placeholder="EAAxxxxx… (from Graph API Explorer)" style="margin:0">
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <div style="flex:1;min-width:180px">
+              <label class="lbl">App ID</label>
+              <input type="text" id="tokUpAppId" placeholder="123456789012345" style="margin:0">
+            </div>
+            <div style="flex:1;min-width:180px">
+              <label class="lbl">App Secret</label>
+              <input type="password" id="tokUpSecret" placeholder="abc123def456…" style="margin:0">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary btn-lg" onclick="upgradeMetaToken()" id="tokUpBtn">🔒 Upgrade to Permanent Tokens</button>
+            <a href="https://developers.facebook.com/tools/explorer" target="_blank" class="btn btn-ghost" style="text-decoration:none;font-size:11px">Open Explorer →</a>
+            <a href="https://developers.facebook.com/apps" target="_blank" class="btn btn-ghost" style="text-decoration:none;font-size:11px">Apps Dashboard →</a>
+          </div>
+          <div id="tokUpStatus" style="margin-top:12px;font-size:11px;color:var(--t3)"></div>
+        </div>
+
         <!-- All linked accounts -->
         <div class="card" style="margin-bottom:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -2671,6 +2713,71 @@ function openBsSite() {
     ? `https://business.facebook.com/latest/posts/scheduled_posts?asset_id=${pageId}`
     : `https://business.facebook.com/latest/posts/scheduled_posts`;
   window.open(url, '_blank');
+}
+
+// ════════════════════════════════════════════════
+//  UPGRADE TO PERMANENT META TOKENS
+//  Calls /api/meta-token-upgrade which exchanges the short-lived
+//  token for a 60-day user token + permanent per-Page tokens.
+// ════════════════════════════════════════════════
+async function upgradeMetaToken() {
+  const shortToken = document.getElementById('tokUpShort').value.trim();
+  const appId      = document.getElementById('tokUpAppId').value.trim();
+  const appSecret  = document.getElementById('tokUpSecret').value.trim();
+  const btn        = document.getElementById('tokUpBtn');
+  const status     = document.getElementById('tokUpStatus');
+
+  if (!shortToken) return toast('Paste your short-lived user token', 'error');
+  if (!appId)      return toast('Paste your Meta App ID', 'error');
+  if (!appSecret)  return toast('Paste your Meta App Secret', 'error');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Exchanging tokens…';
+  status.innerHTML = '<span style="color:var(--a2)">Calling Meta Graph API…</span>';
+
+  try {
+    const res = await fetch('/api/meta-token-upgrade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shortToken, appId, appSecret })
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+
+    const expiresDate = new Date(data.expiresAt).toLocaleDateString('en-IN', {month:'short',day:'numeric',year:'numeric'});
+    status.innerHTML = `
+      <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:12px 14px;color:var(--green);font-family:var(--mono);font-size:11px;line-height:1.8">
+        ✅ <strong>SUCCESS — Tokens are now permanent</strong><br>
+        • Long-lived user token saved (expires ${expiresDate})<br>
+        • Fetched <strong>${data.pageCount}</strong> Pages with permanent tokens<br>
+        • ${data.igAccountCount} of those have Instagram Business accounts<br>
+        • All saved to your database. No more 1-hour expiry.
+      </div>`;
+    toast(`✅ Upgraded! ${data.pageCount} pages with permanent tokens`, 'success');
+
+    // Refresh local CFG cache from server
+    CFG.metaAccessToken = data.longUserToken;
+    CFG.metaConnected   = true;
+    CFG.metaPages       = data.pages;
+    try { await Api.saveConfig({ metaAccessToken: data.longUserToken, metaConnected: true, metaPages: data.pages }); } catch(_){}
+
+    // Re-render Meta UI
+    if (typeof renderLinkedAccounts === 'function') renderLinkedAccounts();
+    const qt = document.getElementById('quickTokenInput'); if (qt) qt.value = data.longUserToken;
+    const fp = document.getElementById('fetchPagesBtn'); if (fp) fp.disabled = false;
+
+    // Clear the secret so it isn't lingering in the form
+    document.getElementById('tokUpSecret').value = '';
+  } catch (e) {
+    status.innerHTML = `<div style="color:var(--red);font-size:11px">❌ ${e.message}</div>`;
+    toast('Token upgrade failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔒 Upgrade to Permanent Tokens';
+  }
 }
 
 async function fetchMetaPages() {
