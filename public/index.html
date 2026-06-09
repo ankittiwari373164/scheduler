@@ -4190,6 +4190,39 @@ Return ONLY valid JSON, no markdown fences:
 }
 
 // Core: process one client's Drive folder
+// Auto-discover the Instagram Business account linked to each Facebook page,
+// so clients who only have the FB page stored still post to their connected IG.
+// Newly found IG accounts are persisted so the account count is correct next time.
+async function ensureIgTargetsForClient(client, targets) {
+  const existingIgIds = new Set(targets.filter(t => t.accountType === 'instagram_business').map(t => t.accountId));
+  const fbPages = targets.filter(t => t.accountType === 'facebook_page' && t.token);
+  for (const fb of fbPages) {
+    try {
+      const r = await fetch(`https://graph.facebook.com/v19.0/${fb.accountId}?fields=instagram_business_account{id,username,name}&access_token=${fb.token}`);
+      const d = await r.json();
+      const ig = d.instagram_business_account;
+      if (ig && ig.id && !existingIgIds.has(ig.id)) {
+        const now = new Date().toISOString();
+        let stored = DB.metaAccounts.find(m => m.clientId === client.id && m.accountId === ig.id);
+        if (!stored) {
+          stored = {
+            id: ++DB._nextId, clientId: client.id, accountType: 'instagram_business',
+            accountId: ig.id, accountName: ig.username || ig.name || (fb.accountName + ' (IG)'),
+            accessToken: fb.token, pageId: fb.accountId, isActive: true, createdAt: now, updatedAt: now
+          };
+          DB.metaAccounts.push(stored); // auto-syncs to server
+          botLog(`🔗 ${client.name}: found linked Instagram @${ig.username || ig.id} — added`, 'ok');
+        }
+        targets.push({ accountId: ig.id, accountName: stored.accountName, token: fb.token, accountType: 'instagram_business', pageId: fb.accountId });
+        existingIgIds.add(ig.id);
+      }
+    } catch (e) {
+      // Best-effort — the page token may be expired; that's a separate re-link issue.
+    }
+  }
+  return targets;
+}
+
 async function processDriveClient(client) {
   setBotStatus(client.id,'running');
   botLog(`▶ ${client.name} — starting`,'info');
@@ -4197,9 +4230,11 @@ async function processDriveClient(client) {
   const folderId = extractDriveFolderId(client.driveLink);
   if (!folderId){ botLog(`✗ ${client.name}: invalid Drive link`,'err'); setBotStatus(client.id,'error'); return 0; }
 
-  const targets = DB.metaAccounts.filter(m=>m.clientId===client.id&&m.isActive).map(m=>({
+  let targets = DB.metaAccounts.filter(m=>m.clientId===client.id&&m.isActive).map(m=>({
     accountId:m.accountId, accountName:m.accountName, token:m.accessToken, accountType:m.accountType, pageId:m.pageId
   }));
+  // Auto-add any Instagram account linked to a stored Facebook page.
+  targets = await ensureIgTargetsForClient(client, targets);
   // Deduplicate targets by accountId to prevent double-posting
   const seenTargetIds = new Set();
   const uniqueTargets = targets.filter(t=>{ if(seenTargetIds.has(t.accountId)) return false; seenTargetIds.add(t.accountId); return true; });
