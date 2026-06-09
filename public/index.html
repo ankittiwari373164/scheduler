@@ -363,6 +363,9 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 .drive-fmt-btn{flex:1;padding:9px 6px;border-radius:var(--r1);border:1px solid var(--b2);background:var(--s2);color:var(--t2);font-size:12px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;font-family:var(--sans)}
 .drive-fmt-btn:hover{border-color:var(--b3);color:var(--t1)}
 .drive-fmt-btn.active{border-color:#ec4899;background:rgba(236,72,153,.12);color:#f472b6}
+.drive-pub-btn{flex:1;padding:9px 6px;border-radius:var(--r1);border:1px solid var(--b2);background:var(--s2);color:var(--t2);font-size:12px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;font-family:var(--sans)}
+.drive-pub-btn:hover{border-color:var(--b3);color:var(--t1)}
+.drive-pub-btn.active{border-color:#8b5cf6;background:rgba(139,92,246,.14);color:#a78bfa}
 .bot-card{background:var(--s2);border:1px solid rgba(66,133,244,.2);border-radius:var(--r2);padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
 .bot-status{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .bot-status.idle{background:var(--t3)}
@@ -467,7 +470,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
             <div class="card-title" style="display:flex;align-items:center;gap:8px">
               <span>🤖</span> Drive Bot
               <span class="pill" id="driveBotClientsCount" style="font-size:10px;background:rgba(66,133,244,.1);color:#7baaf7;border-color:rgba(66,133,244,.2)">0 clients</span>
-              <span class="pill" id="driveBotNextRun" style="font-size:10px">Checks daily @ 1pm</span>
+              <span class="pill" id="driveBotNextRun" style="font-size:10px">Manual — click Run Now</span>
             </div>
             <div style="font-size:11px;color:var(--t3);margin-top:2px">Auto-fetches Drive folders every day at 1 PM → AI captions → schedules FB &amp; Instagram → deletes used files from Drive</div>
           </div>
@@ -533,6 +536,12 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
         </div>
         <div class="step-body">
           <label class="lbl" style="margin-bottom:8px">Post to <span style="color:var(--a2)" id="targetCount">0 targets selected</span></label>
+          <div style="position:relative;margin-bottom:8px">
+            <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:13px;color:var(--t3);pointer-events:none">🔍</span>
+            <input type="text" id="targetSearch" placeholder="Search client / page name…" autocomplete="off"
+                   oninput="onTargetSearch(this.value)" style="padding-left:32px;padding-right:30px">
+            <span id="targetSearchClear" onclick="clearTargetSearch()" style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:15px;color:var(--t3);cursor:pointer;line-height:1">×</span>
+          </div>
           <div id="pageTargetList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px">
             <div style="color:var(--t3);font-size:12px;padding:10px 0">No pages loaded — go to Settings → Meta to import pages</div>
           </div>
@@ -1005,7 +1014,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 
       <!-- Drive Bot Config -->
       <div class="drive-section">
-        <div class="drive-section-title">🤖 Drive Bot — Auto Scheduler <span style="font-size:10px;font-weight:400;color:var(--t3)">Bot checks at 1 PM daily, schedules new files, deletes used ones</span></div>
+        <div class="drive-section-title">🤖 Drive Bot — Auto Scheduler <span style="font-size:10px;font-weight:400;color:var(--t3)">Runs only when you click "Run Now" — schedules new files, then auto-deletes them a week later</span></div>
         <div class="form-group" style="margin-bottom:10px">
           <label class="lbl">Google Drive Folder Link <span style="color:var(--t3)">(share as "Anyone with link can view")</span></label>
           <input type="url" id="cDriveLink" placeholder="https://drive.google.com/drive/folders/xxxxx">
@@ -1038,6 +1047,13 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <div class="drive-fmt-btn" id="dfmt_both" onclick="setDriveFormat('both',this)">🔀 Both</div>
             </div>
           </div>
+          <div style="flex:1;min-width:200px">
+            <label class="lbl">Publish As <span style="color:var(--t3);font-weight:400;font-size:10px">(Instagram)</span></label>
+            <div class="drive-fmt-row">
+              <div class="drive-pub-btn active" id="dpub_post" onclick="setDrivePublishAs('post',this)">📰 Post</div>
+              <div class="drive-pub-btn" id="dpub_story" onclick="setDrivePublishAs('story',this)">⭕ Story</div>
+            </div>
+          </div>
           <div style="flex:0 0 220px">
             <label class="lbl">Post Time Window <span style="color:var(--t3);font-weight:400;font-size:10px">(random within range)</span></label>
             <div style="display:flex;gap:6px;align-items:center">
@@ -1048,7 +1064,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           </div>
         </div>
         <div class="drive-folder-guide">
-          <strong style="color:var(--t1)">📁 How it works:</strong> Drop files in your Drive folder named descriptively — <code>summer-sale-40off.jpg</code> or <code>new-launch.mp4</code>. The bot runs at 1 PM daily, picks new files, generates captions via Groq, schedules them to FB &amp; Instagram, then <strong style="color:#f472b6">deletes the file from Drive</strong> so it won't post again.
+          <strong style="color:var(--t1)">📁 How it works:</strong> Drop files in your Drive folder named descriptively — <code>summer-sale-40off.jpg</code> or <code>new-launch.mp4</code>. When you click <strong style="color:#7baaf7">▶ Run Now</strong>, the bot picks up new files, generates captions via Groq, and schedules them to FB &amp; Instagram. Each file is then <strong style="color:#f472b6">auto-deleted from Drive one week after its scheduled date</strong> — so it stays available until it has published, then cleans itself up.
         </div>
       </div>
     </div>
@@ -1126,10 +1142,10 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
     </div>
     <div class="modal-body">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-        <div style="font-size:12px;color:var(--t3)">Last run: <span id="botLastRun" style="color:var(--t2)">Never</span> &nbsp;·&nbsp; Next auto-run: <span id="botNextRunTime" style="color:var(--a2)">today @ 1:00 PM</span></div>
+        <div style="font-size:12px;color:var(--t3)">Last run: <span id="botLastRun" style="color:var(--t2)">Never</span> &nbsp;·&nbsp; <span id="botNextRunTime" style="color:var(--t2)">Manual only — click "Run Now"</span></div>
         <button class="btn" style="background:linear-gradient(135deg,#4285f4,#1a73e8);color:#fff;font-size:11px" onclick="runDriveBot()">▶ Run Now</button>
       </div>
-      <div id="driveBotLog" class="bot-log">No runs yet — click Run Now or wait for the 1 PM auto-run.</div>
+      <div id="driveBotLog" class="bot-log">No runs yet — click "▶ Run Now" to schedule all configured clients from Drive.</div>
       <div style="margin-top:14px">
         <div style="font-size:11px;font-weight:700;color:var(--t2);margin-bottom:8px">Clients with Drive configured:</div>
         <div id="driveClientsList"></div>
@@ -1707,6 +1723,7 @@ function openAddClient() {
   const _endEl = document.getElementById('cDriveTimeEnd'); if (_endEl) _endEl.value = '22:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', f==='image'));
+  ['post','story'].forEach(f => document.getElementById('dpub_'+f)?.classList.toggle('active', f==='post'));
   // Reset custom-days pills
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
   const customRow = document.getElementById('cDriveCustomDaysRow');
@@ -1724,6 +1741,7 @@ async function saveClient() {
   const driveLink = document.getElementById('cDriveLink').value.trim();
   const driveFreq = document.querySelector('.drive-freq-btn.active')?.id?.replace('dfreq_','') || '3x';
   const driveFmt  = document.querySelector('.drive-fmt-btn.active')?.id?.replace('dfmt_','') || 'image';
+  const drivePublishAs = document.querySelector('.drive-pub-btn.active')?.id?.replace('dpub_','') || 'post';
   const driveTime = document.getElementById('cDriveTime').value || '18:00';
   const driveTimeEnd = document.getElementById('cDriveTimeEnd')?.value || driveTime;
   // Read custom days (only meaningful when driveFreq === 'custom')
@@ -1737,6 +1755,7 @@ async function saveClient() {
       c.portfolioId = portfolioId; c.email = document.getElementById('cEmail').value.trim();
       c.phone = document.getElementById('cPhone').value.trim(); c.website = document.getElementById('cWebsite').value.trim();
       c.driveLink = driveLink; c.driveFreq = driveFreq; c.driveFmt = driveFmt;
+      c.drivePublishAs = drivePublishAs;
       c.driveTime = driveTime; c.driveTimeEnd = driveTimeEnd;
       c.driveCustomDays = driveCustomDays;
       c.updatedAt = now;
@@ -1751,7 +1770,7 @@ async function saveClient() {
       toast(`Client "${name}" updated`, 'success');
     }
   } else {
-    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, driveTime, driveTimeEnd, driveCustomDays, createdAt:now, updatedAt:now};
+    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, drivePublishAs, driveTime, driveTimeEnd, driveCustomDays, createdAt:now, updatedAt:now};
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
     if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
@@ -1789,6 +1808,7 @@ function editClient(id) {
   // Reset all toggle states
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.remove('active'));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.remove('active'));
+  ['post','story'].forEach(f => document.getElementById('dpub_'+f)?.classList.remove('active'));
   document.querySelectorAll('#cDriveCustomDaysRow .day-pill').forEach(p => p.classList.remove('sel'));
   const customRow = document.getElementById('cDriveCustomDaysRow');
   if (customRow) customRow.style.display = 'none';
@@ -1810,8 +1830,10 @@ function editClient(id) {
   // Frequency + format toggles
   const driveFreq = c.driveFreq || '3x';
   const driveFmt  = c.driveFmt  || 'image';
+  const drivePublishAs = c.drivePublishAs || 'post';
   document.getElementById('dfreq_' + driveFreq)?.classList.add('active');
   document.getElementById('dfmt_'  + driveFmt)?.classList.add('active');
+  document.getElementById('dpub_'  + drivePublishAs)?.classList.add('active');
 
   // Custom days
   const customDays = c.driveCustomDays || [];
@@ -1959,6 +1981,19 @@ function setDefaultDate() {
 }
 
 const _targetMap = {};
+let _targetSearch = '';
+
+function onTargetSearch(val) {
+  _targetSearch = (val || '').trim().toLowerCase();
+  const clear = document.getElementById('targetSearchClear');
+  if (clear) clear.style.display = _targetSearch ? 'block' : 'none';
+  renderPageTargetList();
+}
+function clearTargetSearch() {
+  const inp = document.getElementById('targetSearch');
+  if (inp) inp.value = '';
+  onTargetSearch('');
+}
 
 function renderPageTargetList() {
   const el = document.getElementById('pageTargetList');
@@ -1993,8 +2028,17 @@ function renderPageTargetList() {
 
   const selectedKeys = new Set(SCH.targets.map(t => (t.accountType === 'facebook_page' ? 'fb_' : 'ig_') + t.accountId));
 
+  const q = _targetSearch;
+  const groupMatches = (group) => {
+    if (!q) return true;
+    const { fb, ig } = group;
+    return (fb && fb.accountName && fb.accountName.toLowerCase().includes(q)) ||
+           (ig && ig.accountName && ig.accountName.toLowerCase().includes(q));
+  };
+  const visibleGroups = Object.values(groups).filter(groupMatches);
+
   let html = '';
-  Object.values(groups).forEach(group => {
+  visibleGroups.forEach(group => {
     const { fb, ig } = group;
     if (fb) {
       const fbKey = 'fb_' + fb.accountId;
@@ -2017,6 +2061,11 @@ function renderPageTargetList() {
       </div>`;
     }
   });
+
+  if (q && !html) {
+    const sel = SCH.targets.length;
+    html = `<div style="color:var(--t3);font-size:12px;padding:10px 2px">No pages match "<span style="color:var(--t2)">${_targetSearch}</span>"${sel ? ` · <span style="color:var(--a2)">${sel} still selected</span>` : ''} — <span onclick="clearTargetSearch()" style="color:var(--a2);cursor:pointer">clear search</span></div>`;
+  }
 
   el.innerHTML = html;
   updateTargetCount();
@@ -3833,6 +3882,10 @@ function setDriveFormat(val, el) {
   document.querySelectorAll('.drive-fmt-btn').forEach(b=>b.classList.remove('active'));
   el.classList.add('active');
 }
+function setDrivePublishAs(val, el) {
+  document.querySelectorAll('.drive-pub-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
 
 function renderDriveBotPanel() {
   const configured = DB.clients.filter(c=>c.driveLink);
@@ -3843,7 +3896,7 @@ function renderDriveBotPanel() {
     // Ask the server whether Google OAuth is connected
     Api.googleStatus().then(s => {
       if (s.connected) {
-        nextRun.textContent = `✓ ${s.email||'Connected'} — checks daily @ 1pm`;
+        nextRun.textContent = `✓ ${s.email||'Connected'} — manual run only`;
         nextRun.style.background = 'rgba(34,197,94,.1)';
         nextRun.style.color = 'var(--green)';
         nextRun.style.borderColor = 'rgba(34,197,94,.2)';
@@ -3868,6 +3921,11 @@ function renderDriveClientsList() {
   if (!configured.length){ el.innerHTML='<div style="font-size:12px;color:var(--t3)">No clients have a Drive folder configured. Edit a client to add one.</div>'; return; }
   el.innerHTML = configured.map(c => {
     const fmtLabel = {image:'🖼 Images',reel:'🎬 Reels',both:'🔀 Both'}[c.driveFmt]||'🖼 Images';
+    const pubAs = c.drivePublishAs === 'story' ? 'story' : 'post';
+    const pubLabel = pubAs === 'story' ? '⭕ Story' : '📰 Post';
+    const pubStyle = pubAs === 'story'
+      ? 'background:rgba(139,92,246,.14);color:#a78bfa;border-color:rgba(139,92,246,.28)'
+      : '';
     const mas = DB.metaAccounts.filter(m=>m.clientId===c.id&&m.isActive);
     return `<div class="bot-card">
       <div class="bot-status idle" id="botStatus_${c.id}"></div>
@@ -3877,6 +3935,7 @@ function renderDriveClientsList() {
       </div>
       <span class="pill" style="font-size:10px;background:rgba(66,133,244,.1);color:#7baaf7;border-color:rgba(66,133,244,.2)">${c.driveFreq||'3x'}</span>
       <span class="pill" style="font-size:10px">${fmtLabel}</span>
+      <span class="pill" style="font-size:10px;${pubStyle}">${pubLabel}</span>
       <span class="pill ${mas.length?'green':''}" style="font-size:10px">${mas.length} acct${mas.length!==1?'s':''}</span>
       <button class="btn btn-ghost" style="font-size:10px;padding:4px 9px" onclick="runDriveBotForClient(${c.id})">▶ Run</button>
     </div>`;
@@ -4032,6 +4091,47 @@ async function deleteDriveFile(fileId, _unused) {
     const token = await getGoogleToken();
     await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?access_token=${encodeURIComponent(token)}`, {method:'DELETE'});
   } catch(e) { console.warn('Drive delete skipped:', e.message); }
+}
+
+// Sweep for Drive files whose 1-week-after-schedule window has passed and
+// delete them. Safe to call any time (init, before/after a bot run) — it only
+// touches files that are due and not already deleted. Runs for ALL clients.
+async function purgeDueDriveFiles(opts = {}) {
+  const log = opts.log === true;
+  // Need Google connected to delete anything.
+  let connected = false;
+  try { connected = (await Api.googleStatus()).connected; } catch(_) {}
+  if (!connected) return 0;
+
+  const now = Date.now();
+  const due = DB.scheduledPosts.filter(p =>
+    p.driveFileId &&
+    p.driveDeleted !== true &&
+    p.driveDeleteAfter &&
+    new Date(p.driveDeleteAfter).getTime() <= now
+  );
+  if (!due.length) return 0;
+
+  if (log) botLog(`🧹 Cleaning up ${due.length} Drive file(s) past their 1-week window…`,'info');
+  let removed = 0;
+  // De-dup by driveFileId in case multiple posts share a file id.
+  const seen = new Set();
+  for (const p of due) {
+    if (!seen.has(p.driveFileId)) {
+      try {
+        await deleteDriveFile(p.driveFileId, CFG.metaAccessToken);
+        if (log) botLog(`🗑 Deleted ${p.fileName||p.driveFileId} from Drive (1 week after schedule)`,'ok');
+      } catch(e) {
+        if (log) botLog(`⚠ Could not delete ${p.fileName||p.driveFileId}: ${e.message}`,'warn');
+      }
+      seen.add(p.driveFileId);
+    }
+    p.driveDeleted = true;
+    p.updatedAt = new Date().toISOString();
+    removed++;
+  }
+  persist();
+  return removed;
 }
 
 // Generate caption via Groq for a Drive file
@@ -4197,6 +4297,7 @@ async function processDriveClient(client) {
     }
 
     const fullCaption = `${generated.caption}\n\n${generated.hashtags||generated.tags.join(' ')}`;
+    const publishAs = client.drivePublishAs === 'story' ? 'story' : 'post';
     const postTime = schedDate < new Date(Date.now()+11*60*1000) ? new Date(Date.now()+11*60*1000) : schedDate;
     const scheduledUnix = Math.floor(postTime.getTime()/1000);
     const dateStr = postTime.toLocaleDateString('en-IN',{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
@@ -4216,7 +4317,11 @@ async function processDriveClient(client) {
       fileName:df.name, title:generated.title, caption:generated.caption,
       tags:generated.tags.join(','), hashtags:generated.hashtags||generated.tags.join(' '),
       mediaType:df.isVideo?'video':'image', scheduledDates:[postTime.toISOString()],
-      status:'draft', metaPostIds:[], errorMessage:null, createdAt:now, updatedAt:now, driveFileId:df.id
+      status:'draft', metaPostIds:[], errorMessage:null, createdAt:now, updatedAt:now, driveFileId:df.id,
+      // Deferred Drive cleanup: keep the file until a week AFTER its scheduled
+      // date (so it survives until it has actually published), then auto-delete.
+      driveDeleteAfter: new Date(postTime.getTime() + 7*24*60*60*1000).toISOString(),
+      driveDeleted: false
     };
 
     let fileSucceeded = false;
@@ -4241,13 +4346,17 @@ async function processDriveClient(client) {
             } catch(_){}
           }
           const jobId = `ig_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-          const job = {jobId,igId,fbToken:target.token,caption:fullCaption,mediaUrl,mediaType:df.isVideo?'video':'image',scheduledUnix,accountName:target.accountName,clientId:client.id,scheduledPostId:postEntry.id,status:'pending'};
+          // Stories ignore captions on IG — send an empty caption for story jobs.
+          const job = {jobId,igId,fbToken:target.token,caption:(publishAs==='story'?'':fullCaption),mediaUrl,mediaType:df.isVideo?'video':'image',publishAs,scheduledUnix,accountName:target.accountName,clientId:client.id,scheduledPostId:postEntry.id,status:'pending'};
           await Api.addIgJob(job);
           postEntry.metaPostIds.push(jobId);
           DB.postHistory.push({id:++DB._nextId,scheduledPostId:postEntry.id,clientId:client.id,metaAccountId:null,metaPostId:jobId,platform:'instagram',publishedAt:postTime.toISOString(),engagementMetrics:{},createdAt:now});
-          botLog(`✓ ${df.name} queued for IG @ ${dateStr}`,'ok');
+          botLog(`✓ ${df.name} queued for IG ${publishAs==='story'?'Story ⭕':'Post 📰'} @ ${dateStr}`,'ok');
         } else {
           // For FB: download file if not already downloaded
+          if (publishAs === 'story') {
+            botLog(`ℹ ${target.accountName}: Facebook does not allow SCHEDULING Stories via API — scheduling a normal feed post instead.`,'warn');
+          }
           if (!fileObj) {
             botLog(`⬇ Downloading ${df.name} for FB…`,'info');
             fileObj = await downloadDriveFile(df.id, df.name);
@@ -4284,10 +4393,10 @@ async function processDriveClient(client) {
 
     if (fileSucceeded) {
       postEntry.status='scheduled'; scheduled++;
-      // Delete from Drive after successful scheduling
-      botLog(`🗑 Deleting ${df.name} from Drive…`,'info');
-      await deleteDriveFile(df.id, CFG.metaAccessToken);
-      botLog(`✓ ${df.name} deleted from Drive`,'ok');
+      // Do NOT delete now — the file must stay live until Meta has fetched/published it.
+      // It will be auto-deleted one week after its scheduled date by purgeDueDriveFiles().
+      const delDate = new Date(postEntry.driveDeleteAfter).toLocaleDateString('en-IN',{month:'short',day:'numeric'});
+      botLog(`🗓 ${df.name} kept in Drive — auto-deletes ${delDate} (1 week after post date)`,'info');
     } else postEntry.status='failed';
 
     DB.scheduledPosts.push(postEntry);
@@ -4310,6 +4419,7 @@ async function runDriveBotForClient(clientId) {
   document.getElementById('botLastRun').textContent = new Date().toLocaleString('en-IN');
   renderDriveClientsList();
   const n = await processDriveClient(client);
+  await purgeDueDriveFiles({ log: true });
   renderStats(); renderPlanner(); renderUpcoming(); renderHistory(); renderIgQueueBadge();
   toast(`🤖 ${client.name}: ${n} post(s) scheduled from Drive`, n?'success':'info');
 }
@@ -4334,6 +4444,8 @@ async function runDriveBot() {
   }
 
   botLog(`🏁 Done — ${total} post(s) scheduled across ${clients.length} client(s)`,'ok');
+  // Clean up any Drive files whose 1-week-after-schedule window has elapsed.
+  await purgeDueDriveFiles({ log: true });
   if (btn){ btn.disabled=false; btn.textContent='▶ Run Now'; }
 
   const sum = document.getElementById('driveBotSummary');
@@ -4343,23 +4455,18 @@ async function runDriveBot() {
   toast(`🤖 Drive Bot done — ${total} post(s) scheduled`, total?'success':'info');
 }
 
-// 1 PM daily auto-trigger for Drive Bot
+// Drive Bot is MANUAL-ONLY — it never runs on a timer.
+// You schedule all clients by clicking "▶ Run Now" on the dashboard,
+// or schedule a single client from its row / the Clients page.
 function scheduleDailyBotRun() {
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(13,0,0,0); // 1:00 PM
-  if (target <= now) target.setDate(target.getDate()+1); // tomorrow
-  const msUntil = target - now;
+  // Intentionally a no-op: no automatic daily run.
+  // Update any UI labels to reflect manual-only operation.
   const nextRunLabel = document.getElementById('botNextRunTime');
   if (nextRunLabel) {
-    const isToday = target.getDate()===now.getDate();
-    nextRunLabel.textContent = (isToday?'today':'tomorrow') + ' @ ' + target.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+    nextRunLabel.textContent = 'Manual only — click "Run Now"';
+    nextRunLabel.style.color = 'var(--t2)';
   }
-  setTimeout(() => {
-    runDriveBot();
-    setInterval(runDriveBot, 24*60*60*1000); // every 24h after first run
-  }, msUntil);
-  console.log(`[Drive Bot] Next auto-run in ${Math.round(msUntil/60000)}m`);
+  console.log('[Drive Bot] Auto-run disabled — manual trigger only.');
 }
 
 // ════════════════════════════════════════════════
@@ -4374,6 +4481,8 @@ function scheduleDailyBotRun() {
   renderDriveBotPanel();
   // Check Google connection status on boot
   refreshGoogleConnectionUI();
+  // Clean up any Drive files whose 1-week-after-schedule window has passed.
+  purgeDueDriveFiles().catch(()=>{});
 })();
 </script>
 </body>

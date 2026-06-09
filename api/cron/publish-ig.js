@@ -63,16 +63,22 @@ async function publishOne(job) {
   // that happened after the job was originally queued).
   const token = await getFreshToken(job);
 
+  const isStory = job.publishAs === 'story';
+
   // 1. Create container
   let containerId;
   if (job.mediaType === 'video') {
     const params = new URLSearchParams({
       access_token: token,
-      caption: job.caption,
-      media_type: 'REELS',
       video_url: job.mediaUrl,
-      share_to_feed: 'true'
+      // Stories use media_type=STORIES; normal videos are REELS.
+      media_type: isStory ? 'STORIES' : 'REELS'
     });
+    // Captions and share_to_feed only apply to feed Reels, not Stories.
+    if (!isStory) {
+      params.set('caption', job.caption || '');
+      params.set('share_to_feed', 'true');
+    }
     const r = await fetch(`${GRAPH}/${job.igId}/media`, { method: 'POST', body: params });
     const d = await r.json();
     if (d.error) throw new Error(`[${d.error.code}] ${d.error.message}`);
@@ -81,9 +87,11 @@ async function publishOne(job) {
   } else {
     const params = new URLSearchParams({
       access_token: token,
-      caption: job.caption,
       image_url: job.mediaUrl
     });
+    // Image Stories set media_type=STORIES and carry no caption.
+    if (isStory) params.set('media_type', 'STORIES');
+    else params.set('caption', job.caption || '');
     const r = await fetch(`${GRAPH}/${job.igId}/media`, { method: 'POST', body: params });
     const d = await r.json();
     if (d.error) throw new Error(`[${d.error.code}] ${d.error.message}`);
