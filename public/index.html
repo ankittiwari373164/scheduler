@@ -3260,7 +3260,7 @@ async function publishToMeta() {
       feed.append('access_token', token);
       const feedRes = await fetch(`https://graph.facebook.com/v19.0/${accountId}/feed`, {method:'POST', body:feed});
       const feedData = await feedRes.json();
-      if (!feedData.error) return feedData.id || feedData.post_id;
+      if (!feedData.error && (feedData.id || feedData.post_id)) return feedData.id || feedData.post_id;
 
       const fb2 = new FormData();
       fb2.append('source', file);
@@ -4416,7 +4416,12 @@ async function processDriveClient(client) {
             feed.append('published','false'); feed.append('scheduled_publish_time',scheduledUnix.toString()); feed.append('access_token',target.token);
             const fr = await fetch(`https://graph.facebook.com/v19.0/${target.accountId}/feed`,{method:'POST',body:feed});
             const fd = await fr.json();
-            postId = fd.id||fd.post_id||ud.id;
+            // The /feed call is what actually SCHEDULES the post. If it fails we must
+            // NOT report success — previously it fell back to the unpublished photo id,
+            // which made the dashboard say "scheduled" while Meta scheduled nothing.
+            if (fd.error) throw new Error(`Schedule failed: [${fd.error.code}] ${fd.error.message}`);
+            if (!fd.id && !fd.post_id) throw new Error('Schedule failed: Meta returned no post id (post was not scheduled)');
+            postId = fd.id || fd.post_id;
           }
           postEntry.metaPostIds.push(postId);
           DB.postHistory.push({id:++DB._nextId,scheduledPostId:postEntry.id,clientId:client.id,metaAccountId:null,metaPostId:postId,platform:'facebook',publishedAt:postTime.toISOString(),engagementMetrics:{},createdAt:now});
