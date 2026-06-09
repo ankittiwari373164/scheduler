@@ -4190,34 +4190,61 @@ Return ONLY valid JSON, no markdown fences:
 }
 
 // Core: process one client's Drive folder
-// Auto-discover the Instagram Business account linked to each Facebook page,
-// so clients who only have the FB page stored still post to their connected IG.
-// Newly found IG accounts are persisted so the account count is correct next time.
+// Look up the FRESH permanent page token from CFG.metaPages (the same source the
+// manual scheduler uses). Per-client DB.metaAccounts tokens are saved at link time
+// and go stale, which is why the Drive Bot was hitting [190] "session expired"
+// while the manual flow worked.
+function freshPageEntryForAccount(acct) {
+  if (acct.accountType === 'facebook_page') {
+    return CFG.metaPages.find(p => p.pageId === acct.accountId) || null;
+  }
+  // instagram_business
+  return CFG.metaPages.find(p => p.igId === acct.accountId || (acct.pageId && p.pageId === acct.pageId)) || null;
+}
+
+// Build the posting targets for a client using fresh tokens, and auto-add the
+// Instagram account linked to each Facebook page (from CFG.metaPages first, then
+// a Graph lookup as fallback). Newly found IG accounts are persisted so the
+// account count is correct next time.
 async function ensureIgTargetsForClient(client, targets) {
   const existingIgIds = new Set(targets.filter(t => t.accountType === 'instagram_business').map(t => t.accountId));
-  const fbPages = targets.filter(t => t.accountType === 'facebook_page' && t.token);
+  const fbPages = targets.filter(t => t.accountType === 'facebook_page');
+  const now = new Date().toISOString();
+
   for (const fb of fbPages) {
-    try {
-      const r = await fetch(`https://graph.facebook.com/v19.0/${fb.accountId}?fields=instagram_business_account{id,username,name}&access_token=${fb.token}`);
-      const d = await r.json();
-      const ig = d.instagram_business_account;
-      if (ig && ig.id && !existingIgIds.has(ig.id)) {
-        const now = new Date().toISOString();
-        let stored = DB.metaAccounts.find(m => m.clientId === client.id && m.accountId === ig.id);
-        if (!stored) {
-          stored = {
-            id: ++DB._nextId, clientId: client.id, accountType: 'instagram_business',
-            accountId: ig.id, accountName: ig.username || ig.name || (fb.accountName + ' (IG)'),
-            accessToken: fb.token, pageId: fb.accountId, isActive: true, createdAt: now, updatedAt: now
-          };
-          DB.metaAccounts.push(stored); // auto-syncs to server
-          botLog(`🔗 ${client.name}: found linked Instagram @${ig.username || ig.id} — added`, 'ok');
+    // 1) Prefer the known linked IG from CFG.metaPages (no network, fresh token).
+    const pg = CFG.metaPages.find(p => p.pageId === fb.accountId);
+    let igId = pg?.igId || null;
+    let igName = pg?.igName || null;
+    let igToken = pg?.pageToken || fb.token;
+
+    // 2) Fallback: ask the Graph API (only works if fb.token is valid).
+    if (!igId && fb.token) {
+      try {
+        const r = await fetch(`https://graph.facebook.com/v19.0/${fb.accountId}?fields=instagram_business_account{id,username,name}&access_token=${fb.token}`);
+        const d = await r.json();
+        if (d.instagram_business_account?.id) {
+          igId = d.instagram_business_account.id;
+          igName = d.instagram_business_account.username || d.instagram_business_account.name || null;
         }
-        targets.push({ accountId: ig.id, accountName: stored.accountName, token: fb.token, accountType: 'instagram_business', pageId: fb.accountId });
-        existingIgIds.add(ig.id);
+      } catch (e) { /* token may be expired — handled by the warning below */ }
+    }
+
+    if (igId && !existingIgIds.has(igId)) {
+      let stored = DB.metaAccounts.find(m => m.clientId === client.id && m.accountId === igId);
+      if (!stored) {
+        stored = {
+          id: ++DB._nextId, clientId: client.id, accountType: 'instagram_business',
+          accountId: igId, accountName: igName || (fb.accountName + ' (IG)'),
+          accessToken: igToken, pageId: fb.accountId, isActive: true, createdAt: now, updatedAt: now
+        };
+        DB.metaAccounts.push(stored); // auto-syncs to server
+        botLog(`🔗 ${client.name}: found linked Instagram ${igName ? '@' + igName : igId} — added`, 'ok');
+      } else if (igToken && stored.accessToken !== igToken) {
+        stored.accessToken = igToken; stored.updatedAt = now; // refresh stale token
       }
-    } catch (e) {
-      // Best-effort — the page token may be expired; that's a separate re-link issue.
+      targets.push({ accountId: igId, accountName: stored.accountName, token: igToken, accountType: 'instagram_business', pageId: fb.accountId });
+      existingIgIds.add(igId);
     }
   }
   return targets;
@@ -4230,15 +4257,23 @@ async function processDriveClient(client) {
   const folderId = extractDriveFolderId(client.driveLink);
   if (!folderId){ botLog(`✗ ${client.name}: invalid Drive link`,'err'); setBotStatus(client.id,'error'); return 0; }
 
-  let targets = DB.metaAccounts.filter(m=>m.clientId===client.id&&m.isActive).map(m=>({
-    accountId:m.accountId, accountName:m.accountName, token:m.accessToken, accountType:m.accountType, pageId:m.pageId
-  }));
-  // Auto-add any Instagram account linked to a stored Facebook page.
+  let staleCount = 0;
+  let targets = DB.metaAccounts.filter(m=>m.clientId===client.id&&m.isActive).map(m=>{
+    // Use the fresh permanent token from CFG.metaPages when available.
+    const pg = freshPageEntryForAccount(m);
+    const freshToken = pg?.pageToken || null;
+    if (freshToken && freshToken !== m.accessToken) { m.accessToken = freshToken; m.updatedAt = new Date().toISOString(); }
+    if (!freshToken) staleCount++;
+    return { accountId:m.accountId, accountName:m.accountName, token: freshToken || m.accessToken, accountType:m.accountType, pageId:m.pageId };
+  });
+  // Auto-add any Instagram account linked to a stored Facebook page (fresh token).
   targets = await ensureIgTargetsForClient(client, targets);
   // Deduplicate targets by accountId to prevent double-posting
   const seenTargetIds = new Set();
   const uniqueTargets = targets.filter(t=>{ if(seenTargetIds.has(t.accountId)) return false; seenTargetIds.add(t.accountId); return true; });
   if (!uniqueTargets.length){ botLog(`⚠ ${client.name}: no Meta accounts linked`,'warn'); setBotStatus(client.id,'idle'); return 0; }
+  if (staleCount){ botLog(`⚠ ${client.name}: ${staleCount} page(s) not found in your linked Meta pages — re-import in Settings → Meta to refresh tokens, or this may fail with [190].`,'warn'); }
+  persist(); // save any refreshed tokens / newly discovered IG accounts
   botLog(`${client.name}: posting to ${uniqueTargets.length} account(s): ${uniqueTargets.map(t=>t.accountName).join(', ')}`,'info');
 
   // Fetch Drive files
