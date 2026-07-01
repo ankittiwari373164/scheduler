@@ -1,6 +1,6 @@
 // api/config/index.js
 //
-// Application-level config: Groq API key, Groq model, Meta access token,
+// Application-level config: ChatGPT server URL + token, Meta access token,
 // Meta connected flag, list of imported Meta pages.
 //
 // We store everything as ONE document with _id="app_config" so the frontend
@@ -18,8 +18,8 @@ function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 
 // Default config shape so the frontend has something sensible on first load.
 const DEFAULT_CFG = {
-  groqKey: '',
-  groqModel: 'llama-3.1-8b-instant',
+  aiServerUrl: '',
+  aiServerToken: '',
   metaAccessToken: '',
   metaConnected: false,
   metaPages: []
