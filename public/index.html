@@ -1006,6 +1006,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
       </div>
       <div style="height:12px"></div>
       <div class="form-group"><label class="lbl">Website</label><input type="url" id="cWebsite" placeholder="https://brand.com"></div>
+      <div class="form-group"><label class="lbl">ChatGPT Chat Link <span style="color:var(--t3)">(optional — this client's own conversation)</span></label><input type="url" id="cChatLink" placeholder="https://chatgpt.com/c/xxxxxxxx"><div class="help-text">Paste a ChatGPT conversation URL to keep this client's captions in one dedicated chat. Leave blank to use a fresh chat each time.</div></div>
       <div class="form-group" style="margin:0">
         <label class="lbl">Brand Information (TXT) — used by ChatGPT to generate captions</label>
         <textarea id="cBrand" placeholder="Write everything about this brand here:&#10;&#10;• Tone of voice (friendly, professional, luxurious…)&#10;• Target audience (age, gender, interests)&#10;• Key USPs and selling points&#10;• Hashtags to always use&#10;• Content pillars / themes&#10;• Brand language dos &amp; don'ts&#10;• Products/services to promote&#10;• Any special promotions or events&#10;&#10;The more detail, the better the AI captions."></textarea>
@@ -1718,7 +1719,7 @@ function openAddClient() {
   document.getElementById('clientModalTitle').textContent = 'Add Client';
   document.getElementById('clientSaveBtn').textContent = 'Save Client';
   document.getElementById('clientSaveBtn').onclick = saveClient;
-  ['cName','cType','cEmail','cPhone','cWebsite','cBrand','cDriveLink'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['cName','cType','cEmail','cPhone','cWebsite','cChatLink','cBrand','cDriveLink'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('cDriveTime').value = '18:00';
   const _endEl = document.getElementById('cDriveTimeEnd'); if (_endEl) _endEl.value = '22:00';
   ['3x','6x','custom'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
@@ -1739,6 +1740,7 @@ async function saveClient() {
   const portfolioId = parseInt(document.getElementById('cPortfolio').value);
   const now = new Date().toISOString();
   const driveLink = document.getElementById('cDriveLink').value.trim();
+  const chatLink = document.getElementById('cChatLink').value.trim();
   const driveFreq = document.querySelector('.drive-freq-btn.active')?.id?.replace('dfreq_','') || '3x';
   const driveFmt  = document.querySelector('.drive-fmt-btn.active')?.id?.replace('dfmt_','') || 'image';
   const drivePublishAs = document.querySelector('.drive-pub-btn.active')?.id?.replace('dpub_','') || 'post';
@@ -1755,6 +1757,7 @@ async function saveClient() {
       c.portfolioId = portfolioId; c.email = document.getElementById('cEmail').value.trim();
       c.phone = document.getElementById('cPhone').value.trim(); c.website = document.getElementById('cWebsite').value.trim();
       c.driveLink = driveLink; c.driveFreq = driveFreq; c.driveFmt = driveFmt;
+      c.chatLink = chatLink;
       c.drivePublishAs = drivePublishAs;
       c.driveTime = driveTime; c.driveTimeEnd = driveTimeEnd;
       c.driveCustomDays = driveCustomDays;
@@ -1770,7 +1773,7 @@ async function saveClient() {
       toast(`Client "${name}" updated`, 'success');
     }
   } else {
-    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), driveLink, driveFreq, driveFmt, drivePublishAs, driveTime, driveTimeEnd, driveCustomDays, createdAt:now, updatedAt:now};
+    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), chatLink, driveLink, driveFreq, driveFmt, drivePublishAs, driveTime, driveTimeEnd, driveCustomDays, createdAt:now, updatedAt:now};
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
     if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
@@ -1823,6 +1826,7 @@ function editClient(id) {
   document.getElementById('cEmail').value    = c.email || '';
   document.getElementById('cPhone').value    = c.phone || '';
   document.getElementById('cWebsite').value  = c.website || '';
+  document.getElementById('cChatLink').value = c.chatLink || '';
   document.getElementById('cDriveLink').value = c.driveLink || '';
   document.getElementById('cDriveTime').value = c.driveTime || '18:00';
   if (_endEl) _endEl.value = c.driveTimeEnd || c.driveTime || '22:00';
@@ -2569,7 +2573,7 @@ Return ONLY valid JSON, no markdown fences, no explanation:
     const res = await fetch(CFG.aiServerUrl + '/api/generate', {
       method:'POST',
       headers:{'x-gen-token': CFG.aiServerToken || '', 'Content-Type':'application/json'},
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, chatLink: (c && c.chatLink) || undefined })
     });
     if (!res.ok) {
       const err = await res.json().catch(()=>({error:'Server error'}));
@@ -4183,7 +4187,7 @@ ${contactParts.length ? '- After the CTA, on new lines, paste the MANDATORY CONT
 
 Return ONLY valid JSON, no markdown fences:
 {"title":"Short punchy title (max 10 words)","caption":"Full 4-6 sentence caption with hook + value + CTA${contactParts.length?' + contact block on new lines at end':''}","tags":["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],"hashtags":"#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8"}`;
-  const res = await fetch(CFG.aiServerUrl + '/api/generate',{method:'POST',headers:{'x-gen-token':CFG.aiServerToken||'','Content-Type':'application/json'},body:JSON.stringify({prompt})});
+  const res = await fetch(CFG.aiServerUrl + '/api/generate',{method:'POST',headers:{'x-gen-token':CFG.aiServerToken||'','Content-Type':'application/json'},body:JSON.stringify({prompt, chatLink:(c&&c.chatLink)||undefined})});
   if (!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`ChatGPT server HTTP ${res.status}`); }
   const data = await res.json();
   let txt = (data.result||'').trim().replace(/```json|```/g,'').trim();
