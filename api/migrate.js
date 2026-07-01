@@ -69,13 +69,13 @@ module.exports = withCors(async (req, res) => {
       );
     }
 
-    // Save the app config (Groq key, Meta token, metaPages, etc).
+    // Save the app config (ChatGPT server URL/token, Meta token, metaPages, etc).
     // We DO NOT migrate googleServiceAccount / googleAccessToken — those
     // are replaced by the new OAuth flow.
     const configCol = await getCollection('config');
     const cfgUpdate = {
-      groqKey:         CFG.groqKey || '',
-      groqModel:       CFG.groqModel || 'llama-3.1-8b-instant',
+      aiServerUrl:     CFG.aiServerUrl || '',
+      aiServerToken:   CFG.aiServerToken || '',
       metaAccessToken: CFG.metaAccessToken || '',
       metaConnected:   !!CFG.metaConnected,
       metaPages:       CFG.metaPages || [],
