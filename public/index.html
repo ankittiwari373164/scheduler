@@ -1625,11 +1625,13 @@ function nav(view) {
 //  Google sign-in in the browser + resumable upload. Metadata via ChatGPT.
 // ════════════════════════════════════════════════
 let _ytToken = null;        // in-memory Google access token
-let _ytChannel = null;      // connected channel title
+let _ytSignedInId = null;   // channelId of the currently signed-in Google account
+let _ytSignedInTitle = null;
 let _ytTokenClient = null;
 let _ytSelectedClient = null;
 
 function openYouTubeForClient(id){ _ytSelectedClient = id; nav('youtube'); }
+function ytSelectClient(){ _ytSelectedClient = parseInt(document.getElementById('ytClientSel').value); renderYouTube(); }
 
 function loadGIS(){
   return new Promise((resolve, reject) => {
@@ -1645,14 +1647,18 @@ function loadGIS(){
 function renderYouTube(){
   const el = document.getElementById('ytView');
   const clients = DB.clients || [];
-  const opts = clients.map(c => `<option value="${c.id}" ${c.id===_ytSelectedClient?'selected':''}>${c.name}</option>`).join('');
+  if (!_ytSelectedClient && clients[0]) _ytSelectedClient = clients[0].id;
+  const cur = clients.find(c => c.id === _ytSelectedClient);
+  const opts = clients.map(c => `<option value="${c.id}" ${c.id===_ytSelectedClient?'selected':''}>${c.name}${c.ytChannelTitle?' — '+c.ytChannelTitle:''}</option>`).join('');
+  const bound = cur && cur.ytChannelTitle;
+  const signedInMatches = cur && cur.ytChannelId && _ytSignedInId === cur.ytChannelId;
   el.innerHTML = `
     <div class="section-header">
       <div>
         <div style="font-size:15px;font-weight:800">▶️ Upload to YouTube</div>
-        <div style="font-size:11px;color:var(--t3);margin-top:2px">Sign in with the channel's Google account, then upload — Public · Not made for kids · metadata by ChatGPT</div>
+        <div style="font-size:11px;color:var(--t3);margin-top:2px">Each client uses its own YouTube channel · Public · Not made for kids · metadata by ChatGPT</div>
       </div>
-      <div>${_ytChannel ? `<span class="badge badge-groq"><span class="badge-dot" style="background:var(--green)"></span>${_ytChannel}</span>` : ''}</div>
+      <div>${_ytSignedInTitle ? `<span class="badge badge-groq"><span class="badge-dot" style="background:var(--green)"></span>Signed in: ${_ytSignedInTitle}</span>` : ''}</div>
     </div>
     <div class="card" style="max-width:680px">
       ${CFG.googleClientId ? '' : `
@@ -1662,17 +1668,23 @@ function renderYouTube(){
         <div class="help-text">Create a Web OAuth Client ID in Google Cloud Console and add this site to its Authorized JavaScript origins. Then save.</div>
         <button class="btn btn-ghost" style="margin-top:6px" onclick="ytSaveClientId()">Save Client ID</button>
       </div>`}
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
-        <button class="btn btn-primary" onclick="ytConnect()" ${CFG.googleClientId?'':'disabled'}>${_ytToken?'Reconnect Google':'Connect YouTube (Google sign-in)'}</button>
-        ${_ytChannel?`<span style="font-size:12px;color:var(--green)">Connected: ${_ytChannel}</span>`:'<span style="font-size:12px;color:var(--t3)">Not connected</span>'}
+      <div class="form-group">
+        <label class="lbl">Client</label>
+        <select id="ytClientSel" onchange="ytSelectClient()">${opts||'<option value="">No clients</option>'}</select>
+      </div>
+      <div style="background:var(--s1);border:1px solid var(--b1);border-radius:var(--r1);padding:12px;margin-bottom:14px">
+        <div style="font-size:12px;margin-bottom:8px">
+          ${bound
+            ? `This client's channel: <b style="color:#7baaf7">${cur.ytChannelTitle}</b> ${signedInMatches ? '<span style="color:var(--green)">· ready ✓</span>' : '<span style="color:var(--amber,#e0a800)">· not signed in — click Connect</span>'}`
+            : `<span style="color:var(--t3)">No channel linked to this client yet.</span>`}
+        </div>
+        <button class="btn btn-primary" onclick="ytConnect()" ${CFG.googleClientId?'':'disabled'}>${bound?'Connect / switch to this channel':'Connect this channel'}</button>
+        ${bound?`<button class="btn btn-ghost" style="margin-left:6px" onclick="ytUnlink()">Unlink</button>`:''}
+        <div class="help-text" style="margin-top:6px">Sign in with the Google account for <b>${cur?cur.name:'this client'}</b>. It's remembered per client.</div>
       </div>
       <div class="form-group">
-        <label class="lbl">Client (for brand voice & ChatGPT chat)</label>
-        <select id="ytClientSel">${opts||'<option value="">No clients</option>'}</select>
-      </div>
-      <div class="form-group">
-        <label class="lbl">Video title <span style="color:var(--t3)">(ChatGPT writes the description, hashtags & tags from this)</span></label>
-        <input type="text" id="ytTitle" placeholder="e.g. 3 Money Habits That Changed My Life">
+        <label class="lbl">Video title <span style="color:var(--t3)">(leave blank to use the video's file name)</span></label>
+        <input type="text" id="ytTitle" placeholder="Auto from file name if left blank">
       </div>
       <div class="form-group">
         <label class="lbl">Extra context for ChatGPT (optional)</label>
@@ -1682,7 +1694,7 @@ function renderYouTube(){
         <label class="lbl">Video file</label>
         <input type="file" id="ytFile" accept="video/*">
       </div>
-      <button class="btn btn-primary" onclick="ytUpload()" ${_ytToken?'':'disabled'}>Generate metadata & Upload</button>
+      <button class="btn btn-primary" onclick="ytUpload()">Generate metadata & Upload</button>
       <div id="ytProgress" class="help-text" style="margin-top:10px"></div>
       <div id="ytResult" style="margin-top:12px"></div>
     </div>`;
@@ -1695,8 +1707,19 @@ async function ytSaveClientId(){
   toast('Client ID saved ✓', 'success'); renderYouTube();
 }
 
+async function ytUnlink(){
+  const c = DB.clients.find(x => x.id === _ytSelectedClient);
+  if (!c) return;
+  delete c.ytChannelId; delete c.ytChannelTitle;
+  c.ytChannelId = null; c.ytChannelTitle = null;
+  try { await Api.saveClient(c); } catch(e){}
+  toast('Channel unlinked', 'success'); renderYouTube();
+}
+
 async function ytConnect(){
   if (!CFG.googleClientId) return toast('Save your Google Client ID first', 'error');
+  const client = DB.clients.find(c => c.id === _ytSelectedClient);
+  if (!client) return toast('Select a client first', 'error');
   try {
     await loadGIS();
     _ytTokenClient = google.accounts.oauth2.initTokenClient({
@@ -1708,25 +1731,41 @@ async function ytConnect(){
         try {
           const r = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', { headers: { Authorization: 'Bearer ' + _ytToken } });
           const d = await r.json();
-          _ytChannel = d.items && d.items[0] ? d.items[0].snippet.title : 'Connected';
-        } catch { _ytChannel = 'Connected'; }
-        toast('YouTube connected ✓', 'success');
+          const ch = d.items && d.items[0];
+          _ytSignedInId = ch ? ch.id : null;
+          _ytSignedInTitle = ch ? ch.snippet.title : 'Connected';
+        } catch { _ytSignedInId = null; _ytSignedInTitle = 'Connected'; }
+        // Bind this signed-in channel to the selected client.
+        if (_ytSignedInId) {
+          client.ytChannelId = _ytSignedInId;
+          client.ytChannelTitle = _ytSignedInTitle;
+          try { await Api.saveClient(client); } catch(e){}
+          toast(`Linked ${client.name} → ${_ytSignedInTitle}`, 'success');
+        }
         renderYouTube();
       }
     });
-    _ytTokenClient.requestAccessToken({ prompt: _ytToken ? '' : 'consent' });
+    // select_account so you can pick the correct Google account for THIS client
+    _ytTokenClient.requestAccessToken({ prompt: 'select_account' });
   } catch (e) { toast(e.message, 'error'); }
 }
 
 async function ytUpload(){
-  if (!_ytToken) return toast('Connect YouTube first', 'error');
   const clientId = parseInt(document.getElementById('ytClientSel').value);
   const client = DB.clients.find(c => c.id === clientId);
-  const title = document.getElementById('ytTitle').value.trim();
+  let title = document.getElementById('ytTitle').value.trim();
   const ctx = document.getElementById('ytContext').value.trim();
   const file = document.getElementById('ytFile').files[0];
-  if (!title) return toast('Enter a video title', 'error');
   if (!file)  return toast('Choose a video file', 'error');
+  // Title defaults to the file name (minus extension) when left blank.
+  if (!title) title = file.name.replace(/\.[^.]+$/, '');
+
+  // Per-client channel guard: must be signed into THIS client's linked channel.
+  if (!client) return toast('Select a client', 'error');
+  if (!client.ytChannelId) return toast(`Link a YouTube channel for ${client.name} first (Connect this client's channel)`, 'error');
+  if (!_ytToken || _ytSignedInId !== client.ytChannelId) {
+    return toast(`Not signed into ${client.name}'s channel (${client.ytChannelTitle}). Click Connect to switch.`, 'error');
+  }
 
   const prog = document.getElementById('ytProgress');
   const resEl = document.getElementById('ytResult');
