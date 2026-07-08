@@ -20,6 +20,7 @@ function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 const DEFAULT_CFG = {
   aiServerUrl: '',
   aiServerToken: '',
+  googleClientId: '',
   metaAccessToken: '',
   metaConnected: false,
   metaPages: []
