@@ -432,6 +432,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
     <div class="nav-item" onclick="nav('schedule')"><div class="ni">🗓</div>New Schedule</div>
     <div class="nav-item" onclick="nav('history')"><div class="ni">📊</div>Post History</div>
     <div class="nav-item" onclick="nav('queue')"><div class="ni">📸</div>IG Queue</div>
+    <div class="nav-item" onclick="nav('youtube')"><div class="ni">▶️</div>YouTube</div>
     <div class="nav-item" onclick="nav('settings')"><div class="ni">⚙️</div>Settings</div>
   </div>
 
@@ -713,6 +714,11 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
       <div class="card">
         <div id="queueList"></div>
       </div>
+    </div>
+
+    <!-- ══ YOUTUBE ══ -->
+    <div class="view" id="view-youtube">
+      <div id="ytView"></div>
     </div>
 
     <!-- ══ SETTINGS ══ -->
@@ -1339,6 +1345,7 @@ const Api = (function(){
 
       CFG.aiServerUrl     = (config.aiServerUrl || '').replace(/\/+$/,'');
       CFG.aiServerToken   = config.aiServerToken || '';
+      CFG.googleClientId  = config.googleClientId || '';
       CFG.metaAccessToken = config.metaAccessToken || '';
       CFG.metaConnected   = !!config.metaConnected;
       CFG.metaPages       = config.metaPages || [];
@@ -1362,6 +1369,7 @@ const Api = (function(){
       await jput('/api/config', {
         aiServerUrl: CFG.aiServerUrl || '',
         aiServerToken: CFG.aiServerToken || '',
+        googleClientId: CFG.googleClientId || '',
         metaAccessToken: CFG.metaAccessToken || '',
         metaConnected: !!CFG.metaConnected,
         metaPages: CFG.metaPages || []
@@ -1593,7 +1601,7 @@ function nav(view) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('view-' + view).classList.add('active');
   _curView = view;
-  const titles = {dashboard:'Dashboard', clients:'Clients', schedule:'New Schedule', history:'Post History', queue:'Instagram Queue', settings:'Settings'};
+  const titles = {dashboard:'Dashboard', clients:'Clients', schedule:'New Schedule', history:'Post History', queue:'Instagram Queue', youtube:'YouTube Upload', settings:'Settings'};
   document.getElementById('pageTitle').textContent = titles[view] || view;
   document.querySelectorAll('.nav-item').forEach(n => {
     const t = n.textContent.toLowerCase().trim();
@@ -1602,12 +1610,201 @@ function nav(view) {
     else if (view === 'schedule' && t.includes('schedule')) n.classList.add('active');
     else if (view === 'history' && t.includes('history')) n.classList.add('active');
     else if (view === 'queue' && (t.includes('queue') || t.includes('ig queue'))) n.classList.add('active');
+    else if (view === 'youtube' && t.includes('youtube')) n.classList.add('active');
     else if (view === 'settings' && t.includes('settings')) n.classList.add('active');
   });
   if (view === 'schedule') { populateClientSelect(); updateScheduleSummary(); }
   if (view === 'settings') { loadSettingsUI(); }
   if (view === 'history')  { renderHistoryFilter(); renderHistory(); }
   if (view === 'queue')    { refreshQueueView(); }
+  if (view === 'youtube')  { renderYouTube(); }
+}
+
+// ════════════════════════════════════════════════
+//  YOUTUBE UPLOAD (browser → YouTube directly)
+//  Google sign-in in the browser + resumable upload. Metadata via ChatGPT.
+// ════════════════════════════════════════════════
+let _ytToken = null;        // in-memory Google access token
+let _ytChannel = null;      // connected channel title
+let _ytTokenClient = null;
+let _ytSelectedClient = null;
+
+function openYouTubeForClient(id){ _ytSelectedClient = id; nav('youtube'); }
+
+function loadGIS(){
+  return new Promise((resolve, reject) => {
+    if (window.google && google.accounts && google.accounts.oauth2) return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Could not load Google sign-in'));
+    document.head.appendChild(s);
+  });
+}
+
+function renderYouTube(){
+  const el = document.getElementById('ytView');
+  const clients = DB.clients || [];
+  const opts = clients.map(c => `<option value="${c.id}" ${c.id===_ytSelectedClient?'selected':''}>${c.name}</option>`).join('');
+  el.innerHTML = `
+    <div class="section-header">
+      <div>
+        <div style="font-size:15px;font-weight:800">▶️ Upload to YouTube</div>
+        <div style="font-size:11px;color:var(--t3);margin-top:2px">Sign in with the channel's Google account, then upload — Public · Not made for kids · metadata by ChatGPT</div>
+      </div>
+      <div>${_ytChannel ? `<span class="badge badge-groq"><span class="badge-dot" style="background:var(--green)"></span>${_ytChannel}</span>` : ''}</div>
+    </div>
+    <div class="card" style="max-width:680px">
+      ${CFG.googleClientId ? '' : `
+      <div class="form-group">
+        <label class="lbl">Google OAuth Client ID <span style="color:var(--t3)">(one-time setup)</span></label>
+        <input type="text" id="ytClientId" placeholder="xxxx.apps.googleusercontent.com" value="${CFG.googleClientId||''}">
+        <div class="help-text">Create a Web OAuth Client ID in Google Cloud Console and add this site to its Authorized JavaScript origins. Then save.</div>
+        <button class="btn btn-ghost" style="margin-top:6px" onclick="ytSaveClientId()">Save Client ID</button>
+      </div>`}
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <button class="btn btn-primary" onclick="ytConnect()" ${CFG.googleClientId?'':'disabled'}>${_ytToken?'Reconnect Google':'Connect YouTube (Google sign-in)'}</button>
+        ${_ytChannel?`<span style="font-size:12px;color:var(--green)">Connected: ${_ytChannel}</span>`:'<span style="font-size:12px;color:var(--t3)">Not connected</span>'}
+      </div>
+      <div class="form-group">
+        <label class="lbl">Client (for brand voice & ChatGPT chat)</label>
+        <select id="ytClientSel">${opts||'<option value="">No clients</option>'}</select>
+      </div>
+      <div class="form-group">
+        <label class="lbl">Video title <span style="color:var(--t3)">(ChatGPT writes the description, hashtags & tags from this)</span></label>
+        <input type="text" id="ytTitle" placeholder="e.g. 3 Money Habits That Changed My Life">
+      </div>
+      <div class="form-group">
+        <label class="lbl">Extra context for ChatGPT (optional)</label>
+        <textarea id="ytContext" rows="2" placeholder="Anything ChatGPT should know about the video…"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="lbl">Video file</label>
+        <input type="file" id="ytFile" accept="video/*">
+      </div>
+      <button class="btn btn-primary" onclick="ytUpload()" ${_ytToken?'':'disabled'}>Generate metadata & Upload</button>
+      <div id="ytProgress" class="help-text" style="margin-top:10px"></div>
+      <div id="ytResult" style="margin-top:12px"></div>
+    </div>`;
+}
+
+async function ytSaveClientId(){
+  const v = document.getElementById('ytClientId').value.trim();
+  if (!v) return toast('Enter your Google Client ID', 'error');
+  CFG.googleClientId = v; persist();
+  toast('Client ID saved ✓', 'success'); renderYouTube();
+}
+
+async function ytConnect(){
+  if (!CFG.googleClientId) return toast('Save your Google Client ID first', 'error');
+  try {
+    await loadGIS();
+    _ytTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CFG.googleClientId,
+      scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
+      callback: async (resp) => {
+        if (resp.error) { toast('Google sign-in failed: ' + resp.error, 'error'); return; }
+        _ytToken = resp.access_token;
+        try {
+          const r = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', { headers: { Authorization: 'Bearer ' + _ytToken } });
+          const d = await r.json();
+          _ytChannel = d.items && d.items[0] ? d.items[0].snippet.title : 'Connected';
+        } catch { _ytChannel = 'Connected'; }
+        toast('YouTube connected ✓', 'success');
+        renderYouTube();
+      }
+    });
+    _ytTokenClient.requestAccessToken({ prompt: _ytToken ? '' : 'consent' });
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ytUpload(){
+  if (!_ytToken) return toast('Connect YouTube first', 'error');
+  const clientId = parseInt(document.getElementById('ytClientSel').value);
+  const client = DB.clients.find(c => c.id === clientId);
+  const title = document.getElementById('ytTitle').value.trim();
+  const ctx = document.getElementById('ytContext').value.trim();
+  const file = document.getElementById('ytFile').files[0];
+  if (!title) return toast('Enter a video title', 'error');
+  if (!file)  return toast('Choose a video file', 'error');
+
+  const prog = document.getElementById('ytProgress');
+  const resEl = document.getElementById('ytResult');
+  resEl.innerHTML = '';
+  try {
+    // 1) Metadata via ChatGPT
+    let meta = { title, description: '', hashtags: '', tags: '' };
+    if (CFG.aiServerUrl) {
+      prog.textContent = 'Writing metadata with ChatGPT…';
+      const brand = (DB.brandDetails.find(b => b.clientId === clientId) || {}).content || '';
+      const prompt = `You are a YouTube Shorts SEO expert. Return ONLY valid JSON, no markdown, with keys "title","description","hashtags","tags".\n"title": <=90 char catchy title (you may refine the given one).\n"description": 2-4 sentence description with a soft CTA, no hashtags inside.\n"hashtags": a single string of 3-6 hashtags separated by spaces (with #).\n"tags": a single comma-separated string of 8-15 SEO keywords (no #).\n\nBrand: ${client ? client.name : ''}\nBrand info: ${brand}\nVideo title: ${title}\n${ctx ? 'Extra context: ' + ctx : ''}`;
+      try {
+        const r = await fetch(CFG.aiServerUrl + '/api/generate', {
+          method: 'POST',
+          headers: { 'x-gen-token': CFG.aiServerToken || '', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, chatLink: (client && client.chatLink) || undefined })
+        });
+        const d = await r.json();
+        const txt = (d.result || '').trim().replace(/```json|```/g, '').trim();
+        const m = txt.match(/\{[\s\S]*\}/);
+        if (m) meta = Object.assign(meta, JSON.parse(m[0]));
+      } catch (e) { prog.textContent = 'ChatGPT metadata failed, uploading with basic title…'; }
+    }
+
+    const finalTitle = (meta.title || title).slice(0, 100);
+    const hashLine = (meta.hashtags || '').trim();
+    const description = [meta.description || '', '', hashLine].join('\n').trim().slice(0, 4900);
+    const tags = String(meta.tags || '').split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean);
+
+    // 2) Resumable upload straight from the browser to YouTube
+    prog.textContent = 'Starting upload…';
+    const metaBody = {
+      snippet: { title: finalTitle, description, tags, categoryId: '22' },
+      status: { privacyStatus: 'public', selfDeclaredMadeForKids: false, madeForKids: false }
+    };
+    const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + _ytToken,
+        'Content-Type': 'application/json',
+        'X-Upload-Content-Type': file.type || 'video/*',
+        'X-Upload-Content-Length': String(file.size)
+      },
+      body: JSON.stringify(metaBody)
+    });
+    if (!initRes.ok) {
+      const err = await initRes.json().catch(() => ({}));
+      throw new Error((err.error && err.error.message) || ('Upload init failed (' + initRes.status + ')'));
+    }
+    const sessionUrl = initRes.headers.get('location');
+    if (!sessionUrl) throw new Error('No upload session URL returned by YouTube');
+
+    prog.textContent = 'Uploading video… (do not close this tab)';
+    const putRes = await fetch(sessionUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'video/*' },
+      body: file
+    });
+    const putData = await putRes.json().catch(() => ({}));
+    if (!putRes.ok) throw new Error((putData.error && putData.error.message) || ('Upload failed (' + putRes.status + ')'));
+
+    const vid = putData.id;
+    const url = 'https://youtu.be/' + vid;
+    prog.textContent = '';
+    resEl.innerHTML = `
+      <div class="card" style="background:var(--s1)">
+        <div style="font-weight:700;color:var(--green);margin-bottom:8px">✅ Uploaded</div>
+        <div style="font-size:12px;margin-bottom:6px"><b>URL:</b> <a href="${url}" target="_blank" style="color:#7baaf7">${url}</a></div>
+        <div style="font-size:12px;margin-bottom:6px"><b>Title:</b> ${finalTitle}</div>
+        <div style="font-size:12px;margin-bottom:6px;white-space:pre-wrap"><b>Description:</b>\n${description}</div>
+        <div style="font-size:12px"><b>Tags:</b> ${tags.join(', ')}</div>
+      </div>`;
+    toast('Uploaded to YouTube ✓', 'success');
+  } catch (e) {
+    prog.textContent = '';
+    resEl.innerHTML = `<div style="color:var(--red);font-size:12px">✗ ${e.message}</div>`;
+    toast('Upload failed: ' + e.message, 'error');
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -1995,6 +2192,7 @@ function renderClientGrid() {
         <div class="client-btn" onclick="openBrandEdit(${c.id})">Brand TXT</div>
         ${hasDrive ? `<div class="client-btn" style="background:rgba(66,133,244,.1);color:#7baaf7;border-color:rgba(66,133,244,.2)" onclick="runDriveBotForClient(${c.id})">🤖 Bot</div>` : ''}
         <div class="client-btn primary" onclick="scheduleForClient(${c.id})">Schedule →</div>
+        <div class="client-btn" style="background:rgba(255,82,82,.1);color:#ff8a8a;border-color:rgba(255,82,82,.2)" onclick="openYouTubeForClient(${c.id})">▶ YouTube</div>
         <div class="client-btn" onclick="deleteClient(${c.id})" style="color:var(--red)">Del</div>
       </div>
     </div>`;
