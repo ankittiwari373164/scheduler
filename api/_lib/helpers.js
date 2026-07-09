@@ -70,17 +70,18 @@ function requireAdminToken(req) {
 // where every record had a `.id` integer. We use a counters collection.
 async function nextId(getCollection, kind) {
   const counters = await getCollection('config');
-  const result = await counters.findOneAndUpdate(
+  const res = await counters.findOneAndUpdate(
     { _id: `counter_${kind}` },
     { $inc: { value: 1 } },
     { upsert: true, returnDocument: 'after' }
   );
-  // result.value may be the doc OR null on first creation depending on driver version
-  if (result?.value?.value) return result.value.value;
-  if (result?.value)        return result.value.value || 1;
-  // Refetch
-  const doc = await counters.findOne({ _id: `counter_${kind}` });
-  return doc?.value || 1;
+  // Modern driver (v5/v6): `res` IS the updated document.
+  // Legacy driver (v4): the document is under `res.value`.
+  const doc = (res && res.value && typeof res.value === 'object') ? res.value : res;
+  if (doc && typeof doc.value === 'number') return doc.value;
+  // Fallback: read it back directly.
+  const d = await counters.findOne({ _id: `counter_${kind}` });
+  return (d && typeof d.value === 'number') ? d.value : 1;
 }
 
 module.exports = {
