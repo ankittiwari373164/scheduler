@@ -955,7 +955,10 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <div class="card-title" style="margin:0">📑 All Linked Pages</div>
               <div class="card-sub" style="margin:0" id="linkedAccountsCount">0 pages</div>
             </div>
-            <button class="btn btn-danger" style="font-size:11px" onclick="clearAllPages()">Clear All</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-primary" style="font-size:11px" onclick="buildClientsFromLinkedPages()">⚡ Create clients from pages</button>
+              <button class="btn btn-danger" style="font-size:11px" onclick="clearAllPages()">Clear All</button>
+            </div>
           </div>
           <div id="metaAccountsList"></div>
         </div>
@@ -3355,6 +3358,42 @@ function autoCreatePortfoliosAndClients(allPages, businesses) {
     }
   }
   persist();
+}
+
+// Turn the already-linked Meta pages (CFG.metaPages) into clients:
+// pair FB+IG per brand, group into portfolios by Meta Business, store the IG link.
+async function buildClientsFromLinkedPages(){
+  if (!CFG.metaPages || !CFG.metaPages.length) return toast('No linked Meta pages found. Connect Meta first.', 'error');
+  if (!confirm(`Create clients from ${CFG.metaPages.length} linked pages?\nEach page (with its Instagram) becomes a client, grouped into portfolios by its Meta Business.`)) return;
+
+  const bizMap = {};
+  CFG.metaPages.forEach(p => { const id = p.businessId || 'me'; if (!bizMap[id]) bizMap[id] = { id, name: p.businessName || 'My Account' }; });
+  const businesses = Object.values(bizMap);
+
+  autoCreatePortfoliosAndClients(CFG.metaPages, businesses);
+
+  const now = new Date().toISOString();
+  CFG.metaPages.forEach(p => {
+    const c = DB.clients.find(x => x.metaPageId === p.pageId);
+    if (c && p.igName) {
+      c.igUsername = p.igName;
+      c.igLink = 'https://instagram.com/' + p.igName;
+      if (!c.website) c.website = c.igLink;
+      c.updatedAt = now;
+    }
+  });
+
+  const empties = DB.portfolios.filter(p => p.metaBizId && !DB.clients.some(c => c.portfolioId === p.id));
+  for (const p of empties) { try { await Api.deletePortfolio(p.id); } catch(e){} }
+  DB.portfolios = DB.portfolios.filter(p => !empties.includes(p));
+
+  for (const c of DB.clients) { try { await Api.saveClient(c); } catch(e){} }
+  persist();
+
+  renderSidebarPortfolios(); renderClientGrid(); renderStats();
+  renderImportedPagesList();
+  const igCount = CFG.metaPages.filter(p => p.igId).length;
+  toast(`✓ Created ${DB.clients.length} clients (${igCount} with Instagram) from your linked pages`, 'success');
 }
 
 function renderMetaAccountsList() {
