@@ -485,7 +485,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <span class="pill" id="driveBotClientsCount" style="font-size:10px;background:rgba(66,133,244,.1);color:#7baaf7;border-color:rgba(66,133,244,.2)">0 clients</span>
               <span class="pill" id="driveBotNextRun" style="font-size:10px">Manual — click Run Now</span>
             </div>
-            <div style="font-size:11px;color:var(--t3);margin-top:2px">Auto-fetches Drive folders every day at 1 PM → AI captions → schedules FB &amp; Instagram → deletes used files from Drive</div>
+            <div style="font-size:11px;color:var(--t3);margin-top:2px">Auto-runs daily at 9 AM → fetches Drive folders → ChatGPT captions → schedules FB &amp; Instagram → deletes used files a week later</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <button class="btn btn-ghost" style="font-size:11px" onclick="openModal('driveBotModal')">📋 View Log</button>
@@ -1036,7 +1036,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 
       <!-- Drive Bot Config -->
       <div class="drive-section">
-        <div class="drive-section-title">🤖 Drive Bot — Auto Scheduler <span style="font-size:10px;font-weight:400;color:var(--t3)">Runs only when you click "Run Now" — schedules new files, then auto-deletes them a week later</span></div>
+        <div class="drive-section-title">🤖 Drive Bot — Auto Scheduler <span style="font-size:10px;font-weight:400;color:var(--t3)">Auto-runs daily at 9 AM — schedules new files, then auto-deletes them a week after their scheduled date</span></div>
         <div class="form-group" style="margin-bottom:10px">
           <label class="lbl">Google Drive Folder Link <span style="color:var(--t3)">(share as "Anyone with link can view")</span></label>
           <input type="url" id="cDriveLink" placeholder="https://drive.google.com/drive/folders/xxxxx">
@@ -4321,7 +4321,7 @@ function renderDriveBotPanel() {
     // Ask the server whether Google OAuth is connected
     Api.googleStatus().then(s => {
       if (s.connected) {
-        nextRun.textContent = `✓ ${s.email||'Connected'} — manual run only`;
+        nextRun.textContent = `✓ ${s.email||'Connected'} — auto-runs 9 AM daily`;
         nextRun.style.background = 'rgba(34,197,94,.1)';
         nextRun.style.color = 'var(--green)';
         nextRun.style.borderColor = 'rgba(34,197,94,.2)';
@@ -4976,18 +4976,16 @@ async function runDriveBot() {
   toast(`🤖 Drive Bot done — ${total} post(s) scheduled`, total?'success':'info');
 }
 
-// Drive Bot is MANUAL-ONLY — it never runs on a timer.
-// You schedule all clients by clicking "▶ Run Now" on the dashboard,
-// or schedule a single client from its row / the Clients page.
+// Drive Bot is triggered by a scheduled task on your always-on PC (headless),
+// so it does NOT run on an in-page timer (which would need a tab open and could
+// double-run). Purge of week-old Drive files still happens on load + after runs.
 function scheduleDailyBotRun() {
-  // Intentionally a no-op: no automatic daily run.
-  // Update any UI labels to reflect manual-only operation.
   const nextRunLabel = document.getElementById('botNextRunTime');
   if (nextRunLabel) {
-    nextRunLabel.textContent = 'Manual only — click "Run Now"';
-    nextRunLabel.style.color = 'var(--t2)';
+    nextRunLabel.textContent = 'Auto-runs 9 AM via scheduled task (no browser needed)';
+    nextRunLabel.style.color = 'var(--green)';
   }
-  console.log('[Drive Bot] Auto-run disabled — manual trigger only.');
+  console.log('[Drive Bot] Triggered by external scheduled task (headless).');
 }
 
 // ════════════════════════════════════════════════
