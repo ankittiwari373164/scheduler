@@ -15,6 +15,22 @@ module.exports = withCors(async (req, res) => {
   if (req.method !== 'POST') return jsonResponse(res, 405, { error: 'POST only' });
 
   const body = await readBody(req);
+
+  // ── One-shot RESET (folded in here to avoid adding a new serverless function) ──
+  // Wipes portfolios/clients and related data; keeps settings (config) + counters.
+  // Call: POST /api/migrate  body: { action:'reset', confirm:'DELETE', all?:true }
+  if (body && body.action === 'reset') {
+    if (body.confirm !== 'DELETE') return jsonResponse(res, 400, { error: "Add confirm:'DELETE' to wipe. Nothing deleted." });
+    const targets = ['portfolios','clients','brandDetails','metaAccounts','scheduledPosts','igQueue','googleTokens'];
+    if (body.all) targets.push('postHistory');
+    const deleted = {};
+    for (const name of targets) {
+      try { const col = await getCollection(name); const r = await col.deleteMany({}); deleted[name] = r.deletedCount || 0; }
+      catch (e) { deleted[name] = 'error: ' + e.message; }
+    }
+    return jsonResponse(res, 200, { ok: true, message: 'Reset complete. Settings and ID counters preserved.', deleted });
+  }
+
   const { DB = {}, CFG = {} } = body;
 
   const counts = {};
