@@ -23,6 +23,45 @@ const GRAPH = 'https://graph.facebook.com/v19.0';
 
 function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 
+// Meta's error 2207082 ("Media upload has failed") almost always means IG's
+// fetcher couldn't successfully download/process the file at mediaUrl —
+// unreachable URL, redirect chain, wrong/missing Content-Type, or the file
+// exceeds IG's limits. Check this BEFORE creating a container so we fail
+// fast with a clear reason instead of burning a ~2min poll + a retry on a
+// media problem that will never fix itself.
+const IMAGE_MAX_BYTES = 8   * 1024 * 1024;   // Meta: images up to ~8MB
+const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;  // Meta: video up to ~1GB (reels recommended << 100MB)
+
+async function preflightMedia(job) {
+  let head;
+  try {
+    head = await fetch(job.mediaUrl, { method: 'HEAD', redirect: 'follow' });
+  } catch (e) {
+    throw new Error(`Media URL unreachable before publish (${e.message}). Re-upload/re-host the file and re-queue.`);
+  }
+  if (!head.ok) {
+    throw new Error(`Media URL returned HTTP ${head.status} — the file is gone or not public. Re-upload/re-host and re-queue.`);
+  }
+  const ct = (head.headers.get('content-type') || '').toLowerCase();
+  const len = parseInt(head.headers.get('content-length') || '0', 10);
+
+  if (job.mediaType === 'video') {
+    if (ct && !ct.startsWith('video/')) {
+      throw new Error(`Media URL Content-Type is "${ct}", not video/*. IG needs a direct .mp4 (H.264/AAC) URL — check the hosting link.`);
+    }
+    if (len && len > VIDEO_MAX_BYTES) {
+      throw new Error(`Video is ${(len / 1024 / 1024).toFixed(1)}MB, over Meta's limit. Compress before queuing.`);
+    }
+  } else {
+    if (ct && !ct.startsWith('image/')) {
+      throw new Error(`Media URL Content-Type is "${ct}", not image/*. Check the hosting link.`);
+    }
+    if (len && len > IMAGE_MAX_BYTES) {
+      throw new Error(`Image is ${(len / 1024 / 1024).toFixed(1)}MB, over Meta's ~8MB limit. Compress before queuing.`);
+    }
+  }
+}
+
 // Poll the container until it's ready (image: ~2s, reel: up to 2min)
 async function pollContainer(containerId, accessToken, maxWaitMs = 120000) {
   const start = Date.now();
@@ -59,6 +98,9 @@ async function getFreshToken(job) {
 }
 
 async function publishOne(job) {
+  // Fail fast on obviously-broken media instead of burning a 2min poll + retry.
+  await preflightMedia(job);
+
   // Always use the freshest token from mf_config (handles token upgrades
   // that happened after the job was originally queued).
   const token = await getFreshToken(job);
@@ -183,18 +225,24 @@ module.exports = withCors(async (req, res) => {
       results.push({ jobId: job.jobId, status: 'done', metaPostId });
     } catch (e) {
       console.error(`IG publish failed for ${job.jobId}:`, e.message);
-      // Mark failed if too many attempts, otherwise leave for retry
+      // Mark failed if too many attempts, otherwise leave for retry with
+      // exponential backoff (5min, 20min, 60min) so a broken-media job
+      // doesn't just hammer the same failure every 5 minutes.
       const maxRetries = 3;
-      const nextStatus = (job.attempts || 0) >= maxRetries ? 'failed' : 'pending';
+      const attempts = job.attempts || 0;
+      const nextStatus = attempts >= maxRetries ? 'failed' : 'pending';
+      const backoffMin = [5, 20, 60][Math.min(attempts, 2)];
+      const patch = {
+        status: nextStatus,
+        lastError: e.message,
+        updatedAt: new Date().toISOString()
+      };
+      if (nextStatus === 'pending') {
+        patch.scheduledUnix = now + backoffMin * 60;
+      }
       await queue.updateOne(
         { jobId: job.jobId },
-        {
-          $set: {
-            status: nextStatus,
-            lastError: e.message,
-            updatedAt: new Date().toISOString()
-          }
-        }
+        { $set: patch }
       );
       results.push({ jobId: job.jobId, status: nextStatus, error: e.message });
     }
