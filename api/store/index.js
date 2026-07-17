@@ -134,9 +134,14 @@ async function handleConfig(req, res) {
 async function handleOmniClients(req, res) {
   if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'method not allowed' });
   const supabase = getSupabase();
-  const { data, error } = await supabase.from('clients').select('id,name').order('name');
+  const { data, error } = await supabase.from('clients')
+    .select('id,name,business_details,chatgpt_link').order('name');
   if (error) return jsonResponse(res, 500, { error: error.message });
-  return jsonResponse(res, 200, data.map(c => ({ id: c.id, name: c.name })));
+  return jsonResponse(res, 200, data.map(c => ({
+    id: c.id, name: c.name,
+    businessDetails: c.business_details || '',
+    chatLink: c.chatgpt_link || ''
+  })));
 }
 
 // chatgpt-main's own `clients` collection — same MongoDB database scheduler
@@ -144,8 +149,24 @@ async function handleOmniClients(req, res) {
 async function handleChatgptClients(req, res) {
   if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'method not allowed' });
   const col = await getRawCollection('clients');
-  const rows = await col.find({}, { projection: { name: 1 } }).sort({ name: 1 }).toArray();
-  return jsonResponse(res, 200, rows.map(r => ({ id: String(r._id), name: r.name })));
+  const rows = await col.find({}, { projection: {
+    name: 1, industry: 1, tone: 1, audience: 1, services: 1, style: 1,
+    cta: 1, website: 1, description: 1, chatLink: 1
+  } }).sort({ name: 1 }).toArray();
+  return jsonResponse(res, 200, rows.map(r => ({
+    id: String(r._id), name: r.name,
+    businessDetails: [
+      r.industry    && `Industry: ${r.industry}`,
+      r.tone        && `Tone: ${r.tone}`,
+      r.audience    && `Audience: ${r.audience}`,
+      r.services    && `Services: ${r.services}`,
+      r.style       && `Style: ${r.style}`,
+      r.cta         && `CTA: ${r.cta}`,
+      r.website     && `Website: ${r.website}`,
+      r.description && `Description: ${r.description}`
+    ].filter(Boolean).join('\n'),
+    chatLink: r.chatLink || ''
+  })));
 }
 
 /* ---------------- dispatch ---------------- */
