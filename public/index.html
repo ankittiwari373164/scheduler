@@ -956,7 +956,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <div class="card-sub" style="margin:0" id="linkedAccountsCount">0 pages</div>
             </div>
             <div style="display:flex;gap:8px">
-              <button class="btn btn-primary" style="font-size:11px" onclick="buildClientsFromLinkedPages()">⚡ Create clients from pages</button>
+              <button class="btn btn-primary" style="font-size:11px" onclick="buildClientsFromLinkedPages()">⚡ Add new pages as clients</button>
               <button class="btn btn-danger" style="font-size:11px" onclick="clearAllPages()">Clear All</button>
             </div>
           </div>
@@ -3366,66 +3366,63 @@ function autoCreatePortfoliosAndClients(allPages, businesses) {
 async function buildClientsFromLinkedPages(){
   if (!CFG.metaPages || !CFG.metaPages.length) return toast('No linked Meta pages found. Connect Meta first.', 'error');
 
-  // Group pages by their REAL Facebook business portfolio (businessName/businessId)
-  const bizGroups = {};
-  CFG.metaPages.forEach(p => {
-    const key = p.businessId || ('name:' + (p.businessName || p.pageName));
-    if (!bizGroups[key]) bizGroups[key] = { id: p.businessId || null, name: p.businessName || p.pageName, pages: [] };
-    bizGroups[key].pages.push(p);
-  });
-  const groups = Object.values(bizGroups);
+  // ADDITIVE: only create clients for pages that don't have one yet.
+  // Existing clients (and their brand info / chat links / Drive config) are untouched.
+  const missing = CFG.metaPages.filter(p => !DB.clients.some(c => c.metaPageId === p.pageId));
+  if (!missing.length) return toast('All linked pages already have clients ✓', 'success');
 
-  const ok = confirm('Rebuild from your ' + CFG.metaPages.length + ' linked pages into ' + groups.length + ' portfolios (your real Facebook business portfolios).\n\nThis CLEANS existing portfolios & clients first, then rebuilds and links each page Facebook + Instagram for posting.\n\nProceed?');
+  const ok = confirm('Add ' + missing.length + ' new client(s) from your linked pages?\n\n' +
+    missing.map(p => '• ' + (p.pageName || p.igName)).join('\n') +
+    '\n\nExisting clients are NOT touched.');
   if (!ok) return;
 
   const prog = (msg) => { const b = document.getElementById('linkedAccountsCount'); if (b) b.textContent = msg; };
-
-  // 1) Clean wipe (server + local). Deleting clients cascades their brand/meta links.
-  prog('Cleaning old data...');
-  for (const c of [...DB.clients])    { try { await Api.deleteClient(c.id); } catch(e){} }
-  for (const p of [...DB.portfolios]) { try { await Api.deletePortfolio(p.id); } catch(e){} }
-  DB.clients.length = 0; DB.brandDetails.length = 0; DB.metaAccounts.length = 0; DB.portfolios.length = 0;
-
-  // 2) Build sequentially, awaiting each save so foreign keys use the SERVER-assigned ids.
   const PC = ['#6366f1','#3b82f6','#22c55e','#f59e0b','#ec4899','#06b6d4','#ef4444','#8b5cf6','#14b8a6','#f97316','#a855f7','#84cc16'];
   const now = new Date().toISOString();
-  let pi = 0, clientCount = 0, igCount = 0;
+  let added = 0, igCount = 0;
 
-  for (const g of groups) {
-    const port = { id: ++DB._nextId, userId: 1, name: g.name, description: '', color: PC[pi % PC.length], metaBizId: g.id, createdAt: now };
-    await Api.savePortfolio(port);        // port.id becomes the server id
-    DB.portfolios.push(port);             // _serverKnown set -> no duplicate save
-    pi++;
+  for (const p of missing) {
+    prog('Adding ' + (added + 1) + '/' + missing.length + '...');
+    const bizName = p.businessName || p.pageName;
 
-    for (const p of g.pages) {
-      prog('Building ' + (clientCount + 1) + '/' + CFG.metaPages.length + '...');
-      const brand = (p.pageName || p.igName || 'Client').trim();
-      const client = {
-        id: ++DB._nextId, portfolioId: port.id, name: brand, businessType: '',
-        email: '', phone: '',
-        website: p.igName ? 'https://instagram.com/' + p.igName : '',
-        igUsername: p.igName || '',
-        igLink: p.igName ? 'https://instagram.com/' + p.igName : '',
-        metaPageId: p.pageId, createdAt: now, updatedAt: now
-      };
-      await Api.saveClient(client);        // client.id becomes the server id
-      DB.clients.push(client);
-      clientCount++;
+    // Find this page's portfolio (by Meta business), or create it.
+    let port = DB.portfolios.find(x =>
+      (p.businessId && x.metaBizId === p.businessId) ||
+      (x.name || '').toLowerCase() === bizName.toLowerCase()
+    );
+    if (!port) {
+      port = { id: ++DB._nextId, userId: 1, name: bizName, description: '',
+               color: PC[DB.portfolios.length % PC.length], metaBizId: p.businessId || null, createdAt: now };
+      await Api.savePortfolio(port);      // port.id becomes the server id
+      DB.portfolios.push(port);
+    }
 
-      if (p.pageToken) {
-        const fb = { id: ++DB._nextId, clientId: client.id, accountType: 'facebook_page', accountId: p.pageId, accountName: p.pageName, accessToken: p.pageToken, pageId: null, isActive: true, createdAt: now, updatedAt: now };
-        await Api.saveMetaAccount(fb); DB.metaAccounts.push(fb);
-        if (p.igId) {
-          const ig = { id: ++DB._nextId, clientId: client.id, accountType: 'instagram_business', accountId: p.igId, accountName: p.igName || p.pageName + ' (IG)', accessToken: p.pageToken, pageId: p.pageId, isActive: true, createdAt: now, updatedAt: now };
-          await Api.saveMetaAccount(ig); DB.metaAccounts.push(ig);
-          igCount++;
-        }
+    const brand = (p.pageName || p.igName || 'Client').trim();
+    const client = {
+      id: ++DB._nextId, portfolioId: port.id, name: brand, businessType: '',
+      email: '', phone: '',
+      website: p.igName ? 'https://instagram.com/' + p.igName : '',
+      igUsername: p.igName || '',
+      igLink: p.igName ? 'https://instagram.com/' + p.igName : '',
+      metaPageId: p.pageId, createdAt: now, updatedAt: now
+    };
+    await Api.saveClient(client);         // client.id becomes the server id
+    DB.clients.push(client);
+    added++;
+
+    if (p.pageToken) {
+      const fb = { id: ++DB._nextId, clientId: client.id, accountType: 'facebook_page', accountId: p.pageId, accountName: p.pageName, accessToken: p.pageToken, pageId: null, isActive: true, createdAt: now, updatedAt: now };
+      await Api.saveMetaAccount(fb); DB.metaAccounts.push(fb);
+      if (p.igId) {
+        const ig = { id: ++DB._nextId, clientId: client.id, accountType: 'instagram_business', accountId: p.igId, accountName: p.igName || p.pageName + ' (IG)', accessToken: p.pageToken, pageId: p.pageId, isActive: true, createdAt: now, updatedAt: now };
+        await Api.saveMetaAccount(ig); DB.metaAccounts.push(ig);
+        igCount++;
       }
     }
   }
 
   renderSidebarPortfolios(); renderClientGrid(); renderStats(); renderImportedPagesList();
-  toast('\u2713 ' + groups.length + ' portfolios \u00b7 ' + clientCount + ' clients \u00b7 ' + igCount + ' Instagram linked', 'success');
+  toast('\u2713 Added ' + added + ' client(s) \u00b7 ' + igCount + ' with Instagram', 'success');
 }
 
 function renderMetaAccountsList() {
