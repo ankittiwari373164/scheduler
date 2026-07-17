@@ -1,9 +1,15 @@
 // api/_lib/db.js
 // MongoDB connection helper — cached across warm starts on Vercel
 //
-// We reuse the SAME MongoDB cluster + database as the chatgpt-automation
-// project, but all scheduler collections are prefixed with `mf_` to keep
-// them cleanly separated.
+// Scheduler's OWN data (mf_-prefixed collections) lives wherever
+// MONGODB_URI points. That may or may not be the SAME database as
+// chatgpt-main's — depends on what you set up. Rather than assume, we
+// keep a SECOND, optional connection just for reading chatgpt-main's data
+// (used only to list its clients for the shared calendar view):
+//   - If CHATGPT_MONGODB_URI is set, use it (point this at chatgpt-main's
+//     own MONGODB_URI value from its Render env — safest, always correct).
+//   - Otherwise, fall back to reusing MONGODB_URI, which only works if
+//     scheduler and chatgpt-main really do share one database.
 
 const { MongoClient } = require('mongodb');
 
@@ -26,10 +32,35 @@ async function getDb() {
     await cachedClient.connect();
   }
 
-  // Use whatever database the URI specifies (chatgpt-automation default).
-  // If the URI has no DB component, fall back to 'chatgpt'.
   cachedDb = cachedClient.db();
   return cachedDb;
+}
+
+let cachedChatgptClient = null;
+let cachedChatgptDb = null;
+
+async function getChatgptDb() {
+  if (cachedChatgptDb) return cachedChatgptDb;
+
+  // Prefer a dedicated URI; fall back to the shared one if not set.
+  const uri = process.env.CHATGPT_MONGODB_URI || process.env.MONGODB_URI;
+  if (!uri) throw new Error('CHATGPT_MONGODB_URI (or MONGODB_URI) env var is not set');
+
+  if (process.env.CHATGPT_MONGODB_URI) {
+    if (!cachedChatgptClient) {
+      cachedChatgptClient = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 10000,
+        socketTimeoutMS: 30000,
+        maxPoolSize: 5
+      });
+      await cachedChatgptClient.connect();
+    }
+    cachedChatgptDb = cachedChatgptClient.db();
+  } else {
+    // No dedicated URI — reuse scheduler's own connection/database.
+    cachedChatgptDb = await getDb();
+  }
+  return cachedChatgptDb;
 }
 
 // Convenience helpers — every scheduler collection is prefixed `mf_`
@@ -51,13 +82,12 @@ async function getCollection(name) {
   return db.collection(COLLECTIONS[name]);
 }
 
-// Read-only access to chatgpt-main's OWN (unprefixed) collections, which
-// live in this same MongoDB database (scheduler and chatgpt-main share one
-// Atlas cluster/database — scheduler's collections are just mf_-prefixed
-// to avoid colliding with chatgpt-main's). Used only to list chatgpt-main's
-// clients for the shared calendar view; never write through this.
+// Read-only access to chatgpt-main's OWN (unprefixed) collections. Uses
+// CHATGPT_MONGODB_URI if set, otherwise assumes it's the same database as
+// MONGODB_URI. Used only to list chatgpt-main's clients for the shared
+// calendar view; never write through this.
 async function getRawCollection(name) {
-  const db = await getDb();
+  const db = await getChatgptDb();
   return db.collection(name);
 }
 
