@@ -7,8 +7,15 @@
     { "source": "/api/clients/:id", "destination": "/api/clients?id=:id" },
     { "source": "/api/meta-accounts/:id", "destination": "/api/meta-accounts?id=:id" },
     { "source": "/api/scheduled-posts/:id", "destination": "/api/scheduled-posts?id=:id" },
-    { "source": "/api/ig-queue/:jobId", "destination": "/api/ig-queue?jobId=:jobId" },
-    { "source": "/api/calendar/:id", "destination": "/api/calendar/[id]?id=:id" }
+
+    { "source": "/api/ig-queue/:jobId", "destination": "/api/store?resource=ig-queue&jobId=:jobId" },
+    { "source": "/api/ig-queue", "destination": "/api/store?resource=ig-queue" },
+    { "source": "/api/config", "destination": "/api/store?resource=config" },
+
+    { "source": "/api/meta-token-upgrade", "destination": "/api/migrate?action=meta-token-upgrade" },
+
+    { "source": "/api/calendar/generate", "destination": "/api/calendar?action=generate" },
+    { "source": "/api/calendar/:id", "destination": "/api/calendar?id=:id" }
   ],
   "crons": [
     {
