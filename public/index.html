@@ -550,6 +550,12 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           <select id="calClientSelect" style="min-width:220px" onchange="calSelectClient(this.value)">
             <option value="">— select a client —</option>
           </select>
+          <input id="calDays" type="number" min="1" max="60" value="30" style="width:70px" title="Days to generate">
+          <input id="calStartDate" type="date" style="width:150px" title="Start date (defaults to today)">
+          <button class="btn btn-primary" id="calGenerateBtn" onclick="calGenerate()" disabled>✨ Generate &amp; Overwrite</button>
+        </div>
+        <div style="font-size:11px;color:var(--t3);margin-top:8px">
+          Generating replaces this client's not-yet-produced items (planned / prompt_ready / error) in the shared calendar — items already generating, uploaded, or done are kept.
         </div>
       </div>
       <div class="card">
@@ -1665,6 +1671,8 @@ async function calSwitchProgram(program, silent) {
   _calClientId = '';
   document.getElementById('calTabOmni').classList.toggle('active', program === 'omni');
   document.getElementById('calTabChatgpt').classList.toggle('active', program === 'chatgpt');
+  const btn = document.getElementById('calGenerateBtn');
+  if (btn) btn.disabled = true;
   await calLoadClients();
   document.getElementById('calendarList').innerHTML = '<div style="color:var(--t3);font-size:12px">Pick a client to see their calendar.</div>';
 }
@@ -1687,7 +1695,53 @@ async function calLoadClients() {
 
 function calSelectClient(id) {
   _calClientId = id;
+  const btn = document.getElementById('calGenerateBtn');
+  if (btn) btn.disabled = !id;
   loadCalendarItems();
+}
+
+async function calGenerate() {
+  if (!_calClientId) return;
+  const client = _calClients.find(c => String(c.id) === String(_calClientId));
+  if (!client) return toast('Client not found', 'error');
+
+  const days = parseInt(document.getElementById('calDays').value, 10) || 30;
+  const startDate = document.getElementById('calStartDate').value || undefined;
+
+  const ok = confirm(
+    `Generate a fresh ${days}-day calendar for "${client.name}" (${_calProgram})?\n\n` +
+    `This OVERWRITES this client's not-yet-produced items (planned / prompt_ready / error). ` +
+    `Items already generating, uploaded, or done are kept.`
+  );
+  if (!ok) return;
+
+  const btn = document.getElementById('calGenerateBtn');
+  const prevLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  try {
+    const r = await fetch('/api/calendar?action=generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        program: _calProgram,
+        clientId: client.id,
+        clientName: client.name,
+        businessDetails: client.businessDetails || '',
+        chatLink: client.chatLink || undefined,
+        days, startDate
+      })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    toast(`Generated ${data.length} calendar item(s) for ${client.name}`, 'success');
+    renderCalendarTable(data);
+  } catch (e) {
+    toast('Generate failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
 }
 
 async function loadCalendarItems() {
