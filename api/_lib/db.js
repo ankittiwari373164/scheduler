@@ -51,4 +51,14 @@ async function getCollection(name) {
   return db.collection(COLLECTIONS[name]);
 }
 
-module.exports = { getDb, getCollection, COLLECTIONS };
+// Read-only access to chatgpt-main's OWN (unprefixed) collections, which
+// live in this same MongoDB database (scheduler and chatgpt-main share one
+// Atlas cluster/database — scheduler's collections are just mf_-prefixed
+// to avoid colliding with chatgpt-main's). Used only to list chatgpt-main's
+// clients for the shared calendar view; never write through this.
+async function getRawCollection(name) {
+  const db = await getDb();
+  return db.collection(name);
+}
+
+module.exports = { getDb, getCollection, getRawCollection, COLLECTIONS };
