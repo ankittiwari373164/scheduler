@@ -785,6 +785,28 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           </div>
         </div>
 
+        <!-- Media hosting for "New Schedule" manual uploads -->
+        <div class="card" style="margin-top:16px;border-color:rgba(59,130,246,.3)">
+          <div class="card-title">☁️ Media Hosting (Cloudinary)</div>
+          <div class="card-sub" style="color:var(--warn,#f5a623)">
+            Manual uploads in "New Schedule" default to tmpfiles.org, which <b>deletes files after ~1 hour</b>.
+            If a post is scheduled for later than that, the file is already gone by publish time — that's the
+            "Content-Type is text/html" error. Set up a free Cloudinary account (unsigned upload, no server
+            needed) so scheduled media stays live until it actually publishes.
+          </div>
+          <div class="form-group">
+            <label class="lbl">Cloud Name</label>
+            <input type="text" id="cloudinaryCloudNameInput" placeholder="e.g. dxyz1234">
+            <div class="help-text">From your Cloudinary Dashboard (cloudinary.com → free account).</div>
+          </div>
+          <div class="form-group">
+            <label class="lbl">Unsigned Upload Preset</label>
+            <input type="text" id="cloudinaryUploadPresetInput" placeholder="e.g. scheduler_unsigned">
+            <div class="help-text">Settings → Upload → Add upload preset → Signing Mode: <b>Unsigned</b>. Safe to use client-side; no API secret involved.</div>
+          </div>
+          <button class="btn btn-primary" onclick="saveCloudinaryConfig()">Save Media Hosting</button>
+        </div>
+
         <!-- Google Drive — OAuth -->
         <div class="card" style="margin-top:16px;border-color:rgba(66,133,244,.3)">
           <div class="card-title" style="display:flex;align-items:center;gap:8px"><span>🔑</span> Google Drive — Sign In <span class="pill green" style="font-size:10px">Permanent · refresh-token</span></div>
@@ -1275,6 +1297,8 @@ const CFG = {
   metaAccessToken: '',
   metaConnected: false,
   metaPages: [],
+  cloudinaryCloudName: '',
+  cloudinaryUploadPreset: '',
   googleAccessToken: '',       // short-lived manual token (fallback)
   googleServiceAccount: '',    // JSON string of service account key (permanent)
   _gTokenCache: { token: '', expires: 0 } // runtime cache only
@@ -1384,6 +1408,8 @@ const Api = (function(){
       CFG.metaAccessToken = config.metaAccessToken || '';
       CFG.metaConnected   = !!config.metaConnected;
       CFG.metaPages       = config.metaPages || [];
+      CFG.cloudinaryCloudName    = config.cloudinaryCloudName || '';
+      CFG.cloudinaryUploadPreset = config.cloudinaryUploadPreset || '';
       return true;
     } catch(e) {
       console.error('[Api.loadAll] failed:', e);
@@ -1407,7 +1433,9 @@ const Api = (function(){
         googleClientId: CFG.googleClientId || '',
         metaAccessToken: CFG.metaAccessToken || '',
         metaConnected: !!CFG.metaConnected,
-        metaPages: CFG.metaPages || []
+        metaPages: CFG.metaPages || [],
+        cloudinaryCloudName: CFG.cloudinaryCloudName || '',
+        cloudinaryUploadPreset: CFG.cloudinaryUploadPreset || ''
       });
       // We do NOT sync the entire DB array here — individual writes
       // are handled by the higher-level helpers below (saveClient, etc.)
@@ -2850,6 +2878,26 @@ function renderMiniCalendar() {
 async function uploadToImgbb(file, fbPageToken, fbPageId) {
   const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/i.test(file.name);
 
+  // Cloudinary (permanent hosting) — preferred whenever configured, since
+  // this file may not get published until hours/days later (scheduled
+  // post), unlike the temporary hosts below which delete files quickly.
+  if (CFG.cloudinaryCloudName && CFG.cloudinaryUploadPreset) {
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('upload_preset', CFG.cloudinaryUploadPreset);
+      const resourceType = isVideo ? 'video' : 'image';
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CFG.cloudinaryCloudName}/${resourceType}/upload`, {
+        method: 'POST', body: fd
+      });
+      const data = await res.json();
+      if (data.secure_url) return data.secure_url;
+      console.warn('Cloudinary upload failed, falling back:', data.error?.message);
+    } catch (e) {
+      console.warn('Cloudinary upload failed, falling back:', e.message);
+    }
+  }
+
   if (!isVideo && fbPageToken && fbPageId) {
     try {
       const fd = new FormData();
@@ -2868,6 +2916,12 @@ async function uploadToImgbb(file, fbPageToken, fbPageId) {
     } catch(_) {}
   }
 
+  // ⚠ TEMPORARY hosts — tmpfiles.org deletes files after ~1 hour, 0x0.st
+  // after a similarly short window. Fine for posts scheduled within the
+  // next few minutes; if the schedule time is further out, the file will
+  // be gone by the time the cron tries to publish it. Configure Cloudinary
+  // above (Settings → ChatGPT tab) to avoid this.
+  try { toast('No Cloudinary configured — using temporary hosting (~1hr). Set up Cloudinary in Settings for posts scheduled further out.', 'warn'); } catch(_) {}
   try {
     const fd = new FormData();
     fd.append('file', file);
@@ -3917,6 +3971,16 @@ function saveGroq() {
   toast('ChatGPT settings saved ✓', 'success');
 }
 
+function saveCloudinaryConfig() {
+  const cloudName = document.getElementById('cloudinaryCloudNameInput').value.trim();
+  const preset = document.getElementById('cloudinaryUploadPresetInput').value.trim();
+  if (!cloudName || !preset) return toast('Enter both Cloud Name and Upload Preset', 'error');
+  CFG.cloudinaryCloudName = cloudName;
+  CFG.cloudinaryUploadPreset = preset;
+  persist();
+  toast('Media hosting saved ✓ — new manual uploads will use Cloudinary', 'success');
+}
+
 async function testAIServer() {
   if (!CFG.aiServerUrl) return toast('Save a server URL first', 'error');
   toast('Testing ChatGPT server…', 'info');
@@ -4021,6 +4085,8 @@ function updateGoogleTokenStatus() { refreshGoogleConnectionUI(); }
 function loadSettingsUI() {
   if (CFG.aiServerUrl) document.getElementById('aiServerUrlInput').value = CFG.aiServerUrl;
   if (CFG.aiServerToken) document.getElementById('aiServerTokenInput').value = CFG.aiServerToken;
+  if (CFG.cloudinaryCloudName) document.getElementById('cloudinaryCloudNameInput').value = CFG.cloudinaryCloudName;
+  if (CFG.cloudinaryUploadPreset) document.getElementById('cloudinaryUploadPresetInput').value = CFG.cloudinaryUploadPreset;
   refreshGoogleConnectionUI();
   const qt = document.getElementById('quickTokenInput'); if (qt && CFG.metaAccessToken) qt.value = CFG.metaAccessToken;
   const fp = document.getElementById('fetchPagesBtn'); if (fp) fp.disabled = !CFG.metaConnected;
