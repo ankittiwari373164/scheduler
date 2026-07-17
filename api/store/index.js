@@ -146,6 +146,13 @@ async function handleOmniClients(req, res) {
 
 // chatgpt-main's own `clients` collection — same MongoDB database scheduler
 // already connects to (mf_-prefixed collections live alongside it).
+//
+// IMPORTANT: chatgpt-main addresses calendar_items by the client's NAME
+// (see chatgpt-main/lib/schedulerCalendar.js — it always sends
+// clientId: clientName, never the Mongo _id). We must return that same
+// name as `id` here, or calendars generated from this UI land under a
+// different client_id than chatgpt-main looks them up with and never show
+// up on its own dashboard.
 async function handleChatgptClients(req, res) {
   if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'method not allowed' });
   const col = await getRawCollection('clients');
@@ -153,8 +160,9 @@ async function handleChatgptClients(req, res) {
     name: 1, industry: 1, tone: 1, audience: 1, services: 1, style: 1,
     cta: 1, website: 1, description: 1, chatLink: 1
   } }).sort({ name: 1 }).toArray();
-  return jsonResponse(res, 200, rows.map(r => ({
-    id: String(r._id), name: r.name,
+  return jsonResponse(res, 200, rows.filter(r => r.name).map(r => ({
+    id: r.name,      // NOT r._id — must match chatgpt-main's own addressing
+    name: r.name,
     businessDetails: [
       r.industry    && `Industry: ${r.industry}`,
       r.tone        && `Tone: ${r.tone}`,
