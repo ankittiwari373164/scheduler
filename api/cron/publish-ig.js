@@ -32,34 +32,76 @@ function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 const IMAGE_MAX_BYTES = 8   * 1024 * 1024;   // Meta: images up to ~8MB
 const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;  // Meta: video up to ~1GB (reels recommended << 100MB)
 
-async function preflightMedia(job) {
-  let head;
-  try {
-    head = await fetch(job.mediaUrl, { method: 'HEAD', redirect: 'follow' });
-  } catch (e) {
-    throw new Error(`Media URL unreachable before publish (${e.message}). Re-upload/re-host the file and re-queue.`);
-  }
-  if (!head.ok) {
-    throw new Error(`Media URL returned HTTP ${head.status} — the file is gone or not public. Re-upload/re-host and re-queue.`);
-  }
-  const ct = (head.headers.get('content-type') || '').toLowerCase();
-  const len = parseInt(head.headers.get('content-length') || '0', 10);
+// A very common producer of the "text/html, not video/*" failure: a Google
+// Drive SHARE/VIEW link (e.g. .../file/d/<ID>/view or ?id=<ID>) got stored
+// as mediaUrl instead of a direct-content link. Drive's viewer page returns
+// HTML, not the file. Rewrite it to Drive's direct-download endpoint, which
+// serves the raw bytes for files under Drive's virus-scan threshold.
+function driveDirectUrl(url) {
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  if (!/(^|\.)drive\.google\.com$/.test(u.hostname) && !/(^|\.)docs\.google\.com$/.test(u.hostname)) return null;
 
-  if (job.mediaType === 'video') {
-    if (ct && !ct.startsWith('video/')) {
-      throw new Error(`Media URL Content-Type is "${ct}", not video/*. IG needs a direct .mp4 (H.264/AAC) URL — check the hosting link.`);
+  let id = u.searchParams.get('id');
+  if (!id) {
+    const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+    if (m) id = m[1];
+  }
+  if (!id) return null;
+  return `https://drive.google.com/uc?export=download&id=${id}`;
+}
+
+// Returns the mediaUrl to actually publish with (possibly rewritten).
+// Throws with a clear, actionable message if the media truly isn't usable.
+async function preflightMedia(job) {
+  let url = job.mediaUrl;
+
+  const check = async (u) => {
+    let head;
+    try {
+      head = await fetch(u, { method: 'HEAD', redirect: 'follow' });
+    } catch (e) {
+      return { ok: false, reason: `unreachable (${e.message})` };
     }
-    if (len && len > VIDEO_MAX_BYTES) {
-      throw new Error(`Video is ${(len / 1024 / 1024).toFixed(1)}MB, over Meta's limit. Compress before queuing.`);
-    }
-  } else {
-    if (ct && !ct.startsWith('image/')) {
-      throw new Error(`Media URL Content-Type is "${ct}", not image/*. Check the hosting link.`);
-    }
-    if (len && len > IMAGE_MAX_BYTES) {
-      throw new Error(`Image is ${(len / 1024 / 1024).toFixed(1)}MB, over Meta's ~8MB limit. Compress before queuing.`);
+    if (!head.ok) return { ok: false, reason: `HTTP ${head.status}` };
+    return {
+      ok: true,
+      contentType: (head.headers.get('content-type') || '').toLowerCase(),
+      length: parseInt(head.headers.get('content-length') || '0', 10)
+    };
+  };
+
+  let result = await check(url);
+  const wantPrefix = job.mediaType === 'video' ? 'video/' : 'image/';
+
+  // Self-heal: if it looks like an HTML page from a Drive link, try Drive's
+  // direct-download URL instead before giving up.
+  if ((!result.ok || (result.contentType && !result.contentType.startsWith(wantPrefix))) ) {
+    const direct = driveDirectUrl(url);
+    if (direct && direct !== url) {
+      const retry = await check(direct);
+      if (retry.ok && (!retry.contentType || retry.contentType.startsWith(wantPrefix))) {
+        url = direct;
+        result = retry;
+      }
     }
   }
+
+  if (!result.ok) {
+    throw new Error(`Media URL ${result.reason} — the file is gone or not public. Re-upload/re-host and re-queue.`);
+  }
+  if (result.contentType && !result.contentType.startsWith(wantPrefix)) {
+    const driveHint = driveDirectUrl(job.mediaUrl)
+      ? ' This is a Google Drive link — Drive\'s virus-scan interstitial can still return HTML for larger/flagged files even via the direct-download URL. For reliable video hosting, upload to Cloudinary/S3 instead of Drive.'
+      : '';
+    throw new Error(`Media URL Content-Type is "${result.contentType}", not ${wantPrefix}*. IG needs a direct file URL, not a viewer/share page.${driveHint}`);
+  }
+  const maxBytes = job.mediaType === 'video' ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES;
+  if (result.length && result.length > maxBytes) {
+    throw new Error(`File is ${(result.length / 1024 / 1024).toFixed(1)}MB, over Meta's limit for ${job.mediaType}. Compress before queuing.`);
+  }
+
+  return url; // possibly rewritten from the original job.mediaUrl
 }
 
 // Poll the container until it's ready (image: ~2s, reel: up to 2min)
@@ -98,8 +140,16 @@ async function getFreshToken(job) {
 }
 
 async function publishOne(job) {
-  // Fail fast on obviously-broken media instead of burning a 2min poll + retry.
-  await preflightMedia(job);
+  // Fail fast on obviously-broken media instead of burning a 2min poll +
+  // retry. May return a REWRITTEN url (e.g. a Drive share link normalized
+  // to Drive's direct-download endpoint) — persist that back onto the job
+  // so the fix sticks and future retries/logs use the working URL.
+  const fixedUrl = await preflightMedia(job);
+  if (fixedUrl !== job.mediaUrl) {
+    const queue = await getCollection('igQueue');
+    await queue.updateOne({ jobId: job.jobId }, { $set: { mediaUrl: fixedUrl, updatedAt: new Date().toISOString() } });
+    job = { ...job, mediaUrl: fixedUrl };
+  }
 
   // Always use the freshest token from mf_config (handles token upgrades
   // that happened after the job was originally queued).
