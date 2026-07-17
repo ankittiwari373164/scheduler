@@ -11,6 +11,8 @@
     { "source": "/api/ig-queue/:jobId", "destination": "/api/store?resource=ig-queue&jobId=:jobId" },
     { "source": "/api/ig-queue", "destination": "/api/store?resource=ig-queue" },
     { "source": "/api/config", "destination": "/api/store?resource=config" },
+    { "source": "/api/omni-clients", "destination": "/api/store?resource=omni-clients" },
+    { "source": "/api/chatgpt-clients", "destination": "/api/store?resource=chatgpt-clients" },
 
     { "source": "/api/meta-token-upgrade", "destination": "/api/migrate?action=meta-token-upgrade" },
 
