@@ -8,8 +8,9 @@
 //   /api/ig-queue/:jobId    -> /api/store?resource=ig-queue&jobId=:jobId
 //   /api/config             -> /api/store?resource=config
 
-const { getCollection } = require('../_lib/db');
+const { getCollection, getRawCollection } = require('../_lib/db');
 const { readBody, jsonResponse, withCors, nextId } = require('../_lib/helpers');
+const { getSupabase } = require('../_lib/supabase');
 
 function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 
@@ -126,11 +127,34 @@ async function handleConfig(req, res) {
   jsonResponse(res, 405, { error: 'method not allowed' });
 }
 
+/* ---------------- program clients (read-only, for the calendar view) ---------------- */
+
+// omni_flow's own `clients` table — same Supabase project scheduler already
+// uses for calendar_items, so no new integration needed.
+async function handleOmniClients(req, res) {
+  if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'method not allowed' });
+  const supabase = getSupabase();
+  const { data, error } = await supabase.from('clients').select('id,name').order('name');
+  if (error) return jsonResponse(res, 500, { error: error.message });
+  return jsonResponse(res, 200, data.map(c => ({ id: c.id, name: c.name })));
+}
+
+// chatgpt-main's own `clients` collection — same MongoDB database scheduler
+// already connects to (mf_-prefixed collections live alongside it).
+async function handleChatgptClients(req, res) {
+  if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'method not allowed' });
+  const col = await getRawCollection('clients');
+  const rows = await col.find({}, { projection: { name: 1 } }).sort({ name: 1 }).toArray();
+  return jsonResponse(res, 200, rows.map(r => ({ id: String(r._id), name: r.name })));
+}
+
 /* ---------------- dispatch ---------------- */
 
 module.exports = withCors(async (req, res) => {
   const resource = req.query && req.query.resource;
-  if (resource === 'ig-queue') return handleIgQueue(req, res);
-  if (resource === 'config')   return handleConfig(req, res);
+  if (resource === 'ig-queue')        return handleIgQueue(req, res);
+  if (resource === 'config')          return handleConfig(req, res);
+  if (resource === 'omni-clients')    return handleOmniClients(req, res);
+  if (resource === 'chatgpt-clients') return handleChatgptClients(req, res);
   return jsonResponse(res, 400, { error: 'unknown or missing resource' });
 });
