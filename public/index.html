@@ -429,6 +429,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
     <div class="nav-lbl">navigation</div>
     <div class="nav-item active" onclick="nav('dashboard')"><div class="ni">⚡</div>Dashboard</div>
     <div class="nav-item" onclick="nav('clients')"><div class="ni">🏢</div>Clients</div>
+    <div class="nav-item" onclick="nav('calendar')"><div class="ni">📅</div>Content Calendar</div>
     <div class="nav-item" onclick="nav('schedule')"><div class="ni">🗓</div>New Schedule</div>
     <div class="nav-item" onclick="nav('history')"><div class="ni">📊</div>Post History</div>
     <div class="nav-item" onclick="nav('queue')"><div class="ni">📸</div>IG Queue</div>
@@ -529,6 +530,31 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
         <button class="btn btn-primary" onclick="openAddClient()">+ Add Client</button>
       </div>
       <div class="client-grid" id="clientGrid"></div>
+    </div>
+
+    <!-- ══ CONTENT CALENDAR (shared with omni_flow + chatgpt-main, via Supabase) ══ -->
+    <div class="view" id="view-calendar">
+      <div class="section-header">
+        <div>
+          <div style="font-size:15px;font-weight:800">📅 Content Calendar</div>
+          <div style="font-size:11px;color:var(--t3);margin-top:2px">Read-only view of the shared calendar — generated in each program, stored here in Supabase</div>
+        </div>
+        <button class="btn btn-ghost" onclick="loadCalendarItems()">↺ Refresh</button>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+          <div class="stabs" style="margin:0">
+            <div class="stab active" id="calTabOmni" onclick="calSwitchProgram('omni')">Omni (Flow Studio)</div>
+            <div class="stab" id="calTabChatgpt" onclick="calSwitchProgram('chatgpt')">ChatGPT Automation</div>
+          </div>
+          <select id="calClientSelect" style="min-width:220px" onchange="calSelectClient(this.value)">
+            <option value="">— select a client —</option>
+          </select>
+        </div>
+      </div>
+      <div class="card">
+        <div id="calendarList" style="font-size:12px;color:var(--t3)">Pick a program and client to see their calendar.</div>
+      </div>
     </div>
 
     <!-- ══ SCHEDULER ══ -->
@@ -1604,12 +1630,13 @@ function nav(view) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('view-' + view).classList.add('active');
   _curView = view;
-  const titles = {dashboard:'Dashboard', clients:'Clients', schedule:'New Schedule', history:'Post History', queue:'Instagram Queue', youtube:'YouTube Upload', settings:'Settings'};
+  const titles = {dashboard:'Dashboard', clients:'Clients', calendar:'Content Calendar', schedule:'New Schedule', history:'Post History', queue:'Instagram Queue', youtube:'YouTube Upload', settings:'Settings'};
   document.getElementById('pageTitle').textContent = titles[view] || view;
   document.querySelectorAll('.nav-item').forEach(n => {
     const t = n.textContent.toLowerCase().trim();
     if (view === 'dashboard' && t.includes('dashboard')) n.classList.add('active');
-    else if (view === 'clients' && t.includes('client')) n.classList.add('active');
+    else if (view === 'clients' && t.includes('client') && !t.includes('calendar')) n.classList.add('active');
+    else if (view === 'calendar' && t.includes('calendar')) n.classList.add('active');
     else if (view === 'schedule' && t.includes('schedule')) n.classList.add('active');
     else if (view === 'history' && t.includes('history')) n.classList.add('active');
     else if (view === 'queue' && (t.includes('queue') || t.includes('ig queue'))) n.classList.add('active');
@@ -1621,6 +1648,95 @@ function nav(view) {
   if (view === 'history')  { renderHistoryFilter(); renderHistory(); }
   if (view === 'queue')    { refreshQueueView(); }
   if (view === 'youtube')  { renderYouTube(); }
+  if (view === 'calendar') { calSwitchProgram(_calProgram, true); }
+}
+
+// ════════════════════════════════════════════════
+//  CONTENT CALENDAR — read-only view of the shared
+//  calendar_items table (Supabase), fed by both
+//  omni_flow ("omni") and chatgpt-main ("chatgpt").
+// ════════════════════════════════════════════════
+let _calProgram = 'omni';
+let _calClientId = '';
+let _calClients = [];
+
+async function calSwitchProgram(program, silent) {
+  _calProgram = program;
+  _calClientId = '';
+  document.getElementById('calTabOmni').classList.toggle('active', program === 'omni');
+  document.getElementById('calTabChatgpt').classList.toggle('active', program === 'chatgpt');
+  await calLoadClients();
+  document.getElementById('calendarList').innerHTML = '<div style="color:var(--t3);font-size:12px">Pick a client to see their calendar.</div>';
+}
+
+async function calLoadClients() {
+  const sel = document.getElementById('calClientSelect');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const endpoint = _calProgram === 'omni' ? '/api/omni-clients' : '/api/chatgpt-clients';
+    const r = await fetch(endpoint);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    _calClients = await r.json();
+    sel.innerHTML = '<option value="">— select a client —</option>' +
+      _calClients.map(c => `<option value="${c.id}">${(c.name||'').replace(/</g,'&lt;')}</option>`).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">Failed to load clients</option>';
+    toast('Could not load ' + _calProgram + ' clients: ' + e.message, 'error');
+  }
+}
+
+function calSelectClient(id) {
+  _calClientId = id;
+  loadCalendarItems();
+}
+
+async function loadCalendarItems() {
+  const box = document.getElementById('calendarList');
+  if (!_calClientId) {
+    box.innerHTML = '<div style="color:var(--t3);font-size:12px">Pick a client to see their calendar.</div>';
+    return;
+  }
+  box.innerHTML = '<div style="color:var(--t3);font-size:12px">Loading…</div>';
+  try {
+    const r = await fetch(`/api/calendar?program=${encodeURIComponent(_calProgram)}&clientId=${encodeURIComponent(_calClientId)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const items = await r.json();
+    renderCalendarTable(items);
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--danger,#e33)">Failed to load calendar: ${e.message}</div>`;
+  }
+}
+
+function renderCalendarTable(items) {
+  const box = document.getElementById('calendarList');
+  if (!items.length) {
+    box.innerHTML = '<div style="color:var(--t3);font-size:12px">No calendar items yet for this client.</div>';
+    return;
+  }
+  const isChatgpt = _calProgram === 'chatgpt';
+  const rows = items.map(it => {
+    const festive = it.meta && it.meta.isFestive;
+    const secondCol = isChatgpt ? (it.event || '—') : (it.hook || '—');
+    const statusBadge = `<span style="padding:2px 7px;border-radius:5px;font-size:10px;font-weight:700;background:var(--b1)">${it.status || 'planned'}</span>`;
+    const festiveBadge = festive ? ' <span style="padding:2px 7px;border-radius:5px;font-size:10px;font-weight:700;background:var(--a4);color:var(--a3)">🎉 festive</span>' : '';
+    return `<tr>
+      <td style="white-space:nowrap;font-weight:600">${it.scheduled_date || ''}</td>
+      <td>${(it.topic||'').replace(/</g,'&lt;')}</td>
+      <td style="color:var(--t3)">${(secondCol||'').toString().replace(/</g,'&lt;')}</td>
+      ${isChatgpt ? `<td style="color:var(--t3)">${(it.goal||'—').replace(/</g,'&lt;')}</td>` : ''}
+      <td>${statusBadge}${festiveBadge}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="text-align:left;color:var(--t3);font-size:11px">
+      <th style="padding:6px 8px">Date</th>
+      <th style="padding:6px 8px">Topic</th>
+      <th style="padding:6px 8px">${isChatgpt ? 'Event' : 'Hook'}</th>
+      ${isChatgpt ? '<th style="padding:6px 8px">Goal</th>' : ''}
+      <th style="padding:6px 8px">Status</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 // ════════════════════════════════════════════════
