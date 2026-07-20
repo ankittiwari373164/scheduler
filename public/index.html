@@ -1130,7 +1130,7 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
           </div>
           <div style="flex:1;min-width:200px">
             <label class="lbl">Format</label>
-            <div class="drive-fmt-row">
+            <div class="drive-fmt-row" id="cDriveFmtRow">
               <div class="drive-fmt-btn active" id="dfmt_image" onclick="setDriveFormat('image',this)">🖼 Images</div>
               <div class="drive-fmt-btn" id="dfmt_reel" onclick="setDriveFormat('reel',this)">🎬 Reels</div>
               <div class="drive-fmt-btn" id="dfmt_both" onclick="setDriveFormat('both',this)">🔀 Both</div>
@@ -1143,12 +1143,39 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
               <div class="drive-pub-btn" id="dpub_story" onclick="setDrivePublishAs('story',this)">⭕ Story</div>
             </div>
           </div>
-          <div style="flex:0 0 220px">
+          <div style="flex:0 0 220px" id="cDriveSingleWindowRow">
             <label class="lbl">Post Time Window <span style="color:var(--t3);font-weight:400;font-size:10px">(random within range)</span></label>
             <div style="display:flex;gap:6px;align-items:center">
               <input type="time" id="cDriveTime" value="18:00" style="margin:0;flex:1" title="Window start">
               <span style="color:var(--t3);font-size:11px">to</span>
               <input type="time" id="cDriveTimeEnd" value="22:00" style="margin:0;flex:1" title="Window end (set same as start for fixed time)">
+            </div>
+          </div>
+        </div>
+
+        <!-- Dual Daily Posting — morning post + evening video on the same day -->
+        <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--b2)">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:700">
+            <input type="checkbox" id="cDualDaily" onchange="toggleDualDailyUI(this.checked)" style="width:16px;height:16px;margin:0">
+            🌗 Dual Daily Posting — morning image post + evening video, same day
+          </label>
+          <div class="help-text" style="margin:4px 0 0 24px">For clients who want two posts a day instead of one. Overrides Format above (fetches both images and videos) and uses the two time windows below instead of the single window above. Other clients are unaffected.</div>
+          <div id="cDualDailyWindows" style="display:none;margin-top:10px;gap:16px;flex-wrap:wrap;margin-left:24px">
+            <div style="flex:0 0 220px">
+              <label class="lbl">🌅 Morning Window (image post)</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="time" id="cMorningStart" value="08:00" style="margin:0;flex:1">
+                <span style="color:var(--t3);font-size:11px">to</span>
+                <input type="time" id="cMorningEnd" value="10:00" style="margin:0;flex:1">
+              </div>
+            </div>
+            <div style="flex:0 0 220px">
+              <label class="lbl">🌆 Evening Window (video)</label>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="time" id="cEveningStart" value="18:00" style="margin:0;flex:1">
+                <span style="color:var(--t3);font-size:11px">to</span>
+                <input type="time" id="cEveningEnd" value="21:00" style="margin:0;flex:1">
+              </div>
             </div>
           </div>
         </div>
@@ -2176,6 +2203,17 @@ function renderPortManage() {
   }).join('');
 }
 
+function toggleDualDailyUI(on) {
+  const windows = document.getElementById('cDualDailyWindows');
+  const singleWindow = document.getElementById('cDriveSingleWindowRow');
+  const fmtRow = document.getElementById('cDriveFmtRow');
+  if (windows) windows.style.display = on ? 'flex' : 'none';
+  if (singleWindow) singleWindow.style.opacity = on ? '.4' : '1';
+  if (singleWindow) singleWindow.querySelectorAll('input').forEach(i => i.disabled = on);
+  if (fmtRow) fmtRow.style.opacity = on ? '.4' : '1';
+  if (fmtRow) fmtRow.querySelectorAll('.drive-fmt-btn').forEach(b => b.style.pointerEvents = on ? 'none' : '');
+}
+
 function openAddClient() {
   _editingClientId = null;
   document.getElementById('clientModalTitle').textContent = 'Add Client';
@@ -2184,6 +2222,12 @@ function openAddClient() {
   ['cName','cType','cEmail','cPhone','cWebsite','cChatLink','cBrand','cDriveLink'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('cDriveTime').value = '18:00';
   const _endEl = document.getElementById('cDriveTimeEnd'); if (_endEl) _endEl.value = '22:00';
+  document.getElementById('cDualDaily').checked = false;
+  ['cMorningStart','cMorningEnd','cEveningStart','cEveningEnd'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = { cMorningStart:'08:00', cMorningEnd:'10:00', cEveningStart:'18:00', cEveningEnd:'21:00' }[id];
+  });
+  toggleDualDailyUI(false);
   ['3x','6x','custom','dates'].forEach(f => document.getElementById('dfreq_'+f)?.classList.toggle('active', f==='3x'));
   ['image','reel','both'].forEach(f => document.getElementById('dfmt_'+f)?.classList.toggle('active', f==='image'));
   ['post','story'].forEach(f => document.getElementById('dpub_'+f)?.classList.toggle('active', f==='post'));
@@ -2212,6 +2256,11 @@ async function saveClient() {
   const drivePublishAs = document.querySelector('.drive-pub-btn.active')?.id?.replace('dpub_','') || 'post';
   const driveTime = document.getElementById('cDriveTime').value || '18:00';
   const driveTimeEnd = document.getElementById('cDriveTimeEnd')?.value || driveTime;
+  const driveDualDaily = document.getElementById('cDualDaily')?.checked || false;
+  const driveMorningStart = document.getElementById('cMorningStart')?.value || '08:00';
+  const driveMorningEnd   = document.getElementById('cMorningEnd')?.value   || '10:00';
+  const driveEveningStart = document.getElementById('cEveningStart')?.value || '18:00';
+  const driveEveningEnd   = document.getElementById('cEveningEnd')?.value   || '21:00';
   // Read custom days (only meaningful when driveFreq === 'custom')
   const driveCustomDays = [...document.querySelectorAll('#cDriveCustomDaysRow .day-pill.sel')].map(p => p.dataset.d);
   // Specific calendar dates (only meaningful when driveFreq === 'dates')
@@ -2228,6 +2277,9 @@ async function saveClient() {
       c.chatLink = chatLink;
       c.drivePublishAs = drivePublishAs;
       c.driveTime = driveTime; c.driveTimeEnd = driveTimeEnd;
+      c.driveDualDaily = driveDualDaily;
+      c.driveMorningStart = driveMorningStart; c.driveMorningEnd = driveMorningEnd;
+      c.driveEveningStart = driveEveningStart; c.driveEveningEnd = driveEveningEnd;
       c.driveCustomDays = driveCustomDays;
       c.driveDates = driveDates;
       c.updatedAt = now;
@@ -2242,7 +2294,7 @@ async function saveClient() {
       toast(`Client "${name}" updated`, 'success');
     }
   } else {
-    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), chatLink, driveLink, driveFreq, driveFmt, drivePublishAs, driveTime, driveTimeEnd, driveCustomDays, driveDates, createdAt:now, updatedAt:now};
+    const client = {id:++DB._nextId, portfolioId, name, businessType:document.getElementById('cType').value.trim(), email:document.getElementById('cEmail').value.trim(), phone:document.getElementById('cPhone').value.trim(), website:document.getElementById('cWebsite').value.trim(), chatLink, driveLink, driveFreq, driveFmt, drivePublishAs, driveTime, driveTimeEnd, driveDualDaily, driveMorningStart, driveMorningEnd, driveEveningStart, driveEveningEnd, driveCustomDays, driveDates, createdAt:now, updatedAt:now};
     DB.clients.push(client);
     const brandContent = document.getElementById('cBrand').value.trim();
     if (brandContent) DB.brandDetails.push({id:++DB._nextId, clientId:client.id, content:brandContent, fileName:`${name.toLowerCase().replace(/\s+/g,'-')}-brand.txt`, createdAt:now, updatedAt:now});
@@ -2299,6 +2351,13 @@ function editClient(id) {
   document.getElementById('cDriveLink').value = c.driveLink || '';
   document.getElementById('cDriveTime').value = c.driveTime || '18:00';
   if (_endEl) _endEl.value = c.driveTimeEnd || c.driveTime || '22:00';
+
+  document.getElementById('cDualDaily').checked = !!c.driveDualDaily;
+  document.getElementById('cMorningStart').value = c.driveMorningStart || '08:00';
+  document.getElementById('cMorningEnd').value   = c.driveMorningEnd   || '10:00';
+  document.getElementById('cEveningStart').value = c.driveEveningStart || '18:00';
+  document.getElementById('cEveningEnd').value   = c.driveEveningEnd   || '21:00';
+  toggleDualDailyUI(!!c.driveDualDaily);
 
   // Frequency + format toggles
   const driveFreq = c.driveFreq || '3x';
@@ -2402,7 +2461,7 @@ function renderClientGrid() {
     const sched = DB.scheduledPosts.filter(s => s.clientId === c.id);
     const p = DB.portfolios.find(x => x.id === c.portfolioId);
     const hasDrive = !!c.driveLink;
-    const fmtLabel = {image:'🖼 Img', reel:'🎬 Reel', both:'🔀 Both'}[c.driveFmt] || '';
+    const fmtLabel = c.driveDualDaily ? '🌗 Dual Daily' : ({image:'🖼 Img', reel:'🎬 Reel', both:'🔀 Both'}[c.driveFmt] || '');
     return `<div class="client-card">
       <div class="client-avatar" style="background:${color}22;color:${color}">${c.name[0].toUpperCase()}</div>
       <div class="client-name">${c.name}</div>
@@ -4578,7 +4637,7 @@ function renderDriveClientsList() {
   const configured = DB.clients.filter(c=>c.driveLink);
   if (!configured.length){ el.innerHTML='<div style="font-size:12px;color:var(--t3)">No clients have a Drive folder configured. Edit a client to add one.</div>'; return; }
   el.innerHTML = configured.map(c => {
-    const fmtLabel = {image:'🖼 Images',reel:'🎬 Reels',both:'🔀 Both'}[c.driveFmt]||'🖼 Images';
+    const fmtLabel = c.driveDualDaily ? '🌗 Dual Daily' : ({image:'🖼 Images',reel:'🎬 Reels',both:'🔀 Both'}[c.driveFmt]||'🖼 Images');
     const pubAs = c.drivePublishAs === 'story' ? 'story' : 'post';
     const pubLabel = pubAs === 'story' ? '⭕ Story' : '📰 Post';
     const pubStyle = pubAs === 'story'
@@ -4934,10 +4993,13 @@ async function processDriveClient(client) {
   persist(); // save any refreshed tokens / newly discovered IG accounts
   botLog(`${client.name}: posting to ${uniqueTargets.length} account(s): ${uniqueTargets.map(t=>t.accountName).join(', ')}`,'info');
 
-  // Fetch Drive files
+  // Fetch Drive files — dual-daily mode needs BOTH images and videos
+  // regardless of the single Format selector, since it pairs one of each
+  // per day.
+  const fetchFmt = client.driveDualDaily ? 'both' : (client.driveFmt || 'image');
   let driveFiles;
   try {
-    driveFiles = await fetchDriveFolderFiles(folderId, client.driveFmt||'image');
+    driveFiles = await fetchDriveFolderFiles(folderId, fetchFmt);
     botLog(`📁 ${client.name}: ${driveFiles.length} file(s) found`,'ok');
   } catch(e){ botLog(`✗ ${client.name}: ${e.message}`,'err'); setBotStatus(client.id,'error'); return 0; }
 
@@ -4964,11 +5026,7 @@ async function processDriveClient(client) {
   }
   if (client.driveFreq !== 'dates') botLog(`📅 ${client.name}: posting on ${freqDays.join(', ')}`, 'info');
 
-  // Random time window — each post gets an independent random time between
-  // driveTime (start) and driveTimeEnd (end). If they're equal, it's fixed.
-  const startTime = client.driveTime || '18:00';
-  const endTime   = client.driveTimeEnd || startTime;
-  const randomTimeInWindow = () => {
+  const randomInRange = (startTime, endTime) => {
     const [sh, sm] = startTime.split(':').map(n => parseInt(n));
     const [eh, em] = endTime.split(':').map(n => parseInt(n));
     const startMin = sh * 60 + sm;
@@ -4977,51 +5035,80 @@ async function processDriveClient(client) {
     const picked = startMin === endMin ? startMin : startMin + Math.floor(Math.random() * (endMin - startMin + 1));
     return { hh: Math.floor(picked / 60), mm: picked % 60 };
   };
-  if (startTime !== endTime) {
-    botLog(`🎲 ${client.name}: random posting window ${startTime}–${endTime}`, 'info');
-  }
 
   const today = new Date();
-  const scheduleDates = [];
 
-  if (client.driveFreq === 'dates') {
-    // Specific calendar dates chosen by the user. Assign files to the
-    // upcoming selected dates in order; skip any dates already in the past.
-    const picked = (client.driveDates || [])
-      .map(ds => { const d = new Date(ds + 'T00:00:00'); return d; })
-      .filter(d => !isNaN(d) && d >= new Date(today.getFullYear(), today.getMonth(), today.getDate()))
-      .sort((a, b) => a - b);
-    botLog(`📅 ${client.name}: ${picked.length} specific date(s) selected`, 'info');
-    for (const d of picked) {
-      if (scheduleDates.length >= newFiles.length) break;
-      const slot = new Date(d);
-      const { hh, mm } = randomTimeInWindow();
-      slot.setHours(hh, mm, 0, 0);
-      scheduleDates.push(slot);
+  // The qualifying calendar days (either specific picked dates, or the
+  // next N days matching freqDays), used as-is by single-slot mode and as
+  // the day skeleton for dual-daily's two-slots-per-day mode.
+  function qualifyingDays(count) {
+    const days = [];
+    if (client.driveFreq === 'dates') {
+      const picked = (client.driveDates || [])
+        .map(ds => new Date(ds + 'T00:00:00'))
+        .filter(d => !isNaN(d) && d >= new Date(today.getFullYear(), today.getMonth(), today.getDate()))
+        .sort((a, b) => a - b);
+      botLog(`📅 ${client.name}: ${picked.length} specific date(s) selected`, 'info');
+      return picked.slice(0, count);
     }
-    if (newFiles.length > picked.length) {
-      botLog(`⚠️ ${client.name}: ${newFiles.length} file(s) but only ${picked.length} date(s) — extra files not scheduled. Add more dates.`, 'warn');
-    }
-  } else {
-    const cursor = new Date(today); cursor.setHours(0,0,0,0); cursor.setDate(cursor.getDate()+1); // start from tomorrow midnight
-    while (scheduleDates.length < newFiles.length) {
+    const cursor = new Date(today); cursor.setHours(0,0,0,0); cursor.setDate(cursor.getDate()+1);
+    while (days.length < count) {
       const dayName = ALL_DAYS[cursor.getDay()===0?6:cursor.getDay()-1];
-      if (freqDays.includes(dayName)) {
-        const slot = new Date(cursor);
-        const { hh, mm } = randomTimeInWindow();
-        slot.setHours(hh, mm, 0, 0);
-        scheduleDates.push(slot);
-      }
+      if (freqDays.includes(dayName)) days.push(new Date(cursor));
       cursor.setDate(cursor.getDate()+1);
       if (cursor - today > 1000*60*60*24*90) break;
+    }
+    return days;
+  }
+
+  // pairs: [{file, date}] — decoupled from a flat 1:1 index so dual-daily
+  // can assign two different files (image + video) to the same day.
+  const pairs = [];
+
+  if (client.driveDualDaily) {
+    const images = newFiles.filter(f => !f.isVideo);
+    const videos = newFiles.filter(f => f.isVideo);
+    const mStart = client.driveMorningStart || '08:00';
+    const mEnd   = client.driveMorningEnd   || mStart;
+    const eStart = client.driveEveningStart || '18:00';
+    const eEnd   = client.driveEveningEnd   || eStart;
+    botLog(`🌗 ${client.name}: dual-daily mode — ${images.length} image(s) for mornings, ${videos.length} video(s) for evenings`, 'info');
+
+    const days = qualifyingDays(Math.max(images.length, videos.length));
+    let ii = 0, vi = 0;
+    for (const day of days) {
+      if (ii < images.length) {
+        const slot = new Date(day); const { hh, mm } = randomInRange(mStart, mEnd); slot.setHours(hh, mm, 0, 0);
+        pairs.push({ file: images[ii++], date: slot });
+      }
+      if (vi < videos.length) {
+        const slot = new Date(day); const { hh, mm } = randomInRange(eStart, eEnd); slot.setHours(hh, mm, 0, 0);
+        pairs.push({ file: videos[vi++], date: slot });
+      }
+    }
+    const leftover = (images.length - ii) + (videos.length - vi);
+    if (leftover > 0) botLog(`⚠️ ${client.name}: ${leftover} file(s) left over — not enough qualifying days. Add more days/dates.`, 'warn');
+  } else {
+    const startTime = client.driveTime || '18:00';
+    const endTime   = client.driveTimeEnd || startTime;
+    if (startTime !== endTime) botLog(`🎲 ${client.name}: random posting window ${startTime}–${endTime}`, 'info');
+
+    const days = qualifyingDays(newFiles.length);
+    for (let i = 0; i < newFiles.length && i < days.length; i++) {
+      const slot = new Date(days[i]);
+      const { hh, mm } = randomInRange(startTime, endTime);
+      slot.setHours(hh, mm, 0, 0);
+      pairs.push({ file: newFiles[i], date: slot });
+    }
+    if (newFiles.length > days.length && client.driveFreq === 'dates') {
+      botLog(`⚠️ ${client.name}: ${newFiles.length} file(s) but only ${days.length} date(s) — extra files not scheduled. Add more dates.`, 'warn');
     }
   }
 
   let scheduled = 0;
-  for (let i = 0; i < newFiles.length; i++) {
-    const df = newFiles[i];
-    const schedDate = scheduleDates[i];
+  for (const { file: df, date: schedDate } of pairs) {
     if (!schedDate){ botLog(`⚠ Ran out of schedule dates`,'warn'); break; }
+
 
     botLog(`🤖 Generating caption for ${df.name}…`,'info');
     let generated;
