@@ -104,6 +104,30 @@ async function preflightMedia(job) {
   return url; // possibly rewritten from the original job.mediaUrl
 }
 
+// Best-effort check of a custom Reel cover/thumbnail URL. Unlike
+// preflightMedia() this NEVER throws — a bad thumbnail should not sink an
+// otherwise-good video post. Returns a usable image URL (possibly rewritten
+// from a Drive share link) or null if the thumbnail isn't usable, in which
+// case the caller falls back to IG's automatic frame selection.
+async function preflightThumbnail(url) {
+  if (!url) return null;
+  const check = async (u) => {
+    try {
+      const head = await fetch(u, { method: 'HEAD', redirect: 'follow' });
+      if (!head.ok) return null;
+      const ct = (head.headers.get('content-type') || '').toLowerCase();
+      if (ct && !ct.startsWith('image/')) return null;
+      return u;
+    } catch { return null; }
+  };
+  let ok = await check(url);
+  if (!ok) {
+    const direct = driveDirectUrl(url);
+    if (direct && direct !== url) ok = await check(direct);
+  }
+  return ok;
+}
+
 // Poll the container until it's ready (image: ~2s, reel: up to 2min)
 async function pollContainer(containerId, accessToken, maxWaitMs = 120000) {
   const start = Date.now();
@@ -170,6 +194,15 @@ async function publishOne(job) {
     if (!isStory) {
       params.set('caption', job.caption || '');
       params.set('share_to_feed', 'true');
+    }
+    // Custom thumbnail/cover image, if one was attached when the job was
+    // queued (Drive-paired thumbnail or a manual upload). cover_url is only
+    // honored by Meta for REELS, not STORIES — Meta takes cover_url over
+    // thumb_offset whenever both are present.
+    if (!isStory && job.thumbnailUrl) {
+      const coverUrl = await preflightThumbnail(job.thumbnailUrl);
+      if (coverUrl) params.set('cover_url', coverUrl);
+      else console.warn(`Thumbnail unusable for ${job.jobId}, falling back to auto frame:`, job.thumbnailUrl);
     }
     const r = await fetch(`${GRAPH}/${job.igId}/media`, { method: 'POST', body: params });
     const d = await r.json();
