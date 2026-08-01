@@ -3021,7 +3021,7 @@ function handleFiles(fileList) {
     if (!SCH.files.find(x => x.name === f.name)) {
       const ext = f.name.split('.').pop().toLowerCase();
       const isVideo = ['mp4','mov','avi','mkv','webm'].includes(ext);
-      SCH.files.push({name:f.name, file:f, size:f.size, ext:ext.toUpperCase().slice(0,4), status:'pending', generated:null, mediaType: isVideo ? 'video' : 'image'});
+      SCH.files.push({name:f.name, file:f, size:f.size, ext:ext.toUpperCase().slice(0,4), status:'pending', generated:null, mediaType: isVideo ? 'video' : 'image', thumbFile:null, thumbPreviewUrl:null});
     }
   });
   renderFileQueue();
@@ -3030,10 +3030,42 @@ function handleFiles(fileList) {
 }
 
 function removeFile(i) {
+  const f = SCH.files[i];
+  if (f && f.thumbPreviewUrl) { try { URL.revokeObjectURL(f.thumbPreviewUrl); } catch(_) {} }
   SCH.files.splice(i, 1);
   renderFileQueue();
   renderAIArea();
   updateScheduleSummary();
+}
+
+// Manual thumbnail upload — only meaningful for videos, where Meta would
+// otherwise auto-pick a cover frame. Stored on the file entry and uploaded
+// to public hosting at schedule time (see postToInstagram in publishToMeta).
+function triggerThumbPicker(i) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = (e) => { if (e.target.files[0]) setFileThumbnail(i, e.target.files[0]); };
+  input.click();
+}
+
+function setFileThumbnail(i, imgFile) {
+  const f = SCH.files[i];
+  if (!f) return;
+  if (f.thumbPreviewUrl) { try { URL.revokeObjectURL(f.thumbPreviewUrl); } catch(_) {} }
+  f.thumbFile = imgFile;
+  f.thumbPreviewUrl = URL.createObjectURL(imgFile);
+  renderFileQueue();
+}
+
+function clearFileThumbnail(i, ev) {
+  if (ev) ev.stopPropagation();
+  const f = SCH.files[i];
+  if (!f) return;
+  if (f.thumbPreviewUrl) { try { URL.revokeObjectURL(f.thumbPreviewUrl); } catch(_) {} }
+  f.thumbFile = null;
+  f.thumbPreviewUrl = null;
+  renderFileQueue();
 }
 
 function fmtBytes(b) {
@@ -3056,6 +3088,12 @@ function renderFileQueue() {
         <div class="file-name">${f.name}</div>
         <div class="file-meta">${fmtBytes(f.size)} · ${fileTitle(f.name)}</div>
       </div>
+      ${f.mediaType === 'video' ? `
+      <div class="file-thumb-ctrl" onclick="triggerThumbPicker(${i})" title="${f.thumbFile ? 'Change cover thumbnail' : 'Upload a custom cover thumbnail (optional — otherwise Instagram auto-picks a frame)'}" style="display:flex;align-items:center;gap:6px;cursor:pointer;border:1px dashed var(--b2);border-radius:8px;padding:3px 8px;font-size:10px;color:var(--t2)">
+        ${f.thumbPreviewUrl ? `<img src="${f.thumbPreviewUrl}" style="width:24px;height:24px;object-fit:cover;border-radius:4px">` : '<span style="font-size:14px">🖼</span>'}
+        <span>${f.thumbFile ? 'Cover set' : '+ Thumbnail'}</span>
+        ${f.thumbFile ? `<button onclick="clearFileThumbnail(${i}, event)" style="background:none;border:none;color:var(--t3);cursor:pointer;font-size:12px;line-height:1">×</button>` : ''}
+      </div>` : ''}
       <span class="fstatus ${f.status}">${f.status === 'generating' ? '<span class="spin"></span>' : ''}${f.status}</span>
       <button class="file-rm" onclick="removeFile(${i})">×</button>
     </div>`).join('');
@@ -3908,7 +3946,7 @@ async function publishToMeta() {
     }
   };
 
-  const postToInstagram = async (target, caption, file, mediaType, scheduledUnix) => {
+  const postToInstagram = async (target, caption, file, mediaType, scheduledUnix, thumbFile) => {
     const { accountId } = target;
     const fbToken = target.token;
     const fbPageId = target.pageId;
@@ -3925,8 +3963,20 @@ async function publishToMeta() {
     // Upload now to get a stable public URL — publish later at scheduled time
     const mediaUrl = await getPublicUrl(file, fbToken, fbPageId || igId);
 
+    // Optional custom cover/thumbnail for videos — uploaded the same way as
+    // the main media so it's still reachable when the cron job publishes.
+    let thumbnailUrl = null;
+    if (mediaType === 'video' && thumbFile) {
+      try {
+        thumbnailUrl = await uploadToImgbb(thumbFile, fbToken, fbPageId || igId);
+      } catch (e) {
+        toast(`Thumbnail upload failed, posting without a custom cover: ${e.message}`, 'warn');
+      }
+    }
+
     const jobId = `ig_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
     const job = { jobId, igId, fbToken, caption, mediaUrl, mediaType, scheduledUnix, accountName: target.accountName, status: 'pending' };
+    if (thumbnailUrl) job.thumbnailUrl = thumbnailUrl;
 
     // Server-side queue — cron job picks this up and publishes at scheduledUnix.
     // No more browser setTimeout — works 24/7 even if the tab is closed.
@@ -3989,7 +4039,7 @@ async function publishToMeta() {
 
       try {
         let postId;
-        if (isIG) { postId = await postToInstagram(target, fullCaption, f.file, f.mediaType, scheduledUnix); }
+        if (isIG) { postId = await postToInstagram(target, fullCaption, f.file, f.mediaType, scheduledUnix, f.thumbFile); }
         else { postId = await postToFacebook(target, fullCaption, f.file, f.mediaType, scheduledUnix); }
 
         postEntry.metaPostIds.push(postId);
@@ -4711,11 +4761,14 @@ async function getGoogleToken() {
 }
 
 
-// Fetch Drive folder file listing via Google Drive API v3
+// Fetch Drive folder file listing via Google Drive API v3.
+// NOTE: this always fetches BOTH images and videos, regardless of `format`,
+// because an image may be the designated thumbnail/cover for a video (see
+// pairDriveThumbnails() below) and we need to see it to pair them up. The
+// `format` filtering down to what actually gets *scheduled* happens later,
+// in processDriveClient(), after pairing.
 async function fetchDriveFolderFiles(folderId, format) {
-  const acceptedExts = format==='image' ? ['jpg','jpeg','png','webp','gif']
-    : format==='reel' ? ['mp4','mov','avi','webm']
-    : ['jpg','jpeg','png','webp','gif','mp4','mov','avi','webm'];
+  const acceptedExts = ['jpg','jpeg','png','webp','gif','mp4','mov','avi','webm'];
 
   const mimeMap = {
     jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',gif:'image/gif',
@@ -4750,6 +4803,56 @@ async function fetchDriveFolderFiles(folderId, format) {
   });
 
   return files;
+}
+
+// Pair up video files with a matching thumbnail image from the same Drive
+// folder, so Drive Bot can attach a custom cover to Reels instead of always
+// using IG's auto-picked frame.
+//
+// Matching convention (works with e.g. "Dharma Ka MahatvaV.mp4" +
+// "Dharma Ka MahatvaT.png" — a "V" video and its "T" thumbnail sharing a
+// base name), with a fallback for identically-named pairs like
+// "product.mp4" + "product.jpg":
+//   - strip the extension
+//   - if the video's name ends in "v", also try it with that letter removed
+//   - if the image's name ends in "t", also try it with that letter removed
+//   - if any of those candidate keys match (case-insensitive), they're paired
+//
+// Returns { schedulable, thumbByVideoId } where `schedulable` is the file
+// list with any image that got claimed as a thumbnail removed (so it isn't
+// also posted as its own standalone image post), and `thumbByVideoId` maps
+// a video's Drive file id -> its paired thumbnail file ({id, name}).
+function pairDriveThumbnails(files) {
+  const baseKeys = (name, stripLetter) => {
+    const noExt = name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
+    const keys = new Set([noExt]);
+    if (stripLetter && noExt.length > 1 && noExt.endsWith(stripLetter)) {
+      keys.add(noExt.slice(0, -1).trim());
+    }
+    return keys;
+  };
+
+  const images = files.filter(f => !f.isVideo);
+  const videos = files.filter(f => f.isVideo);
+  const thumbByVideoId = {};
+  const claimedImageIds = new Set();
+
+  for (const v of videos) {
+    const vKeys = baseKeys(v.name, 'v');
+    const match = images.find(img => {
+      if (claimedImageIds.has(img.id)) return false;
+      const iKeys = baseKeys(img.name, 't');
+      for (const k of iKeys) if (vKeys.has(k)) return true;
+      return false;
+    });
+    if (match) {
+      thumbByVideoId[v.id] = { id: match.id, name: match.name, mimeType: match.mimeType };
+      claimedImageIds.add(match.id);
+    }
+  }
+
+  const schedulable = files.filter(f => f.isVideo || !claimedImageIds.has(f.id));
+  return { schedulable, thumbByVideoId };
 }
 
 // Download a Drive file as a File object via Drive API v3
@@ -4842,6 +4945,16 @@ async function purgeDueDriveFiles(opts = {}) {
         if (log) botLog(`⚠ Could not delete ${p.fileName||p.driveFileId}: ${e.message}`,'warn');
       }
       seen.add(p.driveFileId);
+    }
+    // Its paired thumbnail (if any) is a separate Drive file — clean that up too.
+    if (p.thumbnailDriveFileId && !seen.has(p.thumbnailDriveFileId)) {
+      try {
+        await deleteDriveFile(p.thumbnailDriveFileId, CFG.metaAccessToken);
+        if (log) botLog(`🗑 Deleted thumbnail ${p.thumbnailFileName||p.thumbnailDriveFileId} from Drive`,'ok');
+      } catch(e) {
+        if (log) botLog(`⚠ Could not delete thumbnail ${p.thumbnailFileName||p.thumbnailDriveFileId}: ${e.message}`,'warn');
+      }
+      seen.add(p.thumbnailDriveFileId);
     }
     p.driveDeleted = true;
     p.updatedAt = new Date().toISOString();
@@ -4997,9 +5110,17 @@ async function processDriveClient(client) {
   // regardless of the single Format selector, since it pairs one of each
   // per day.
   const fetchFmt = client.driveDualDaily ? 'both' : (client.driveFmt || 'image');
-  let driveFiles;
+  let driveFiles, thumbByVideoId = {};
   try {
-    driveFiles = await fetchDriveFolderFiles(folderId, fetchFmt);
+    const allFiles = await fetchDriveFolderFiles(folderId, fetchFmt);
+    const paired = pairDriveThumbnails(allFiles);
+    thumbByVideoId = paired.thumbByVideoId;
+    const thumbCount = Object.keys(thumbByVideoId).length;
+    if (thumbCount) botLog(`🖼 ${client.name}: matched ${thumbCount} video(s) with a thumbnail image`,'ok');
+    // Now apply the client's chosen format to the thumbnail-aware list.
+    driveFiles = paired.schedulable.filter(f =>
+      fetchFmt === 'both' ? true : (fetchFmt === 'reel' ? f.isVideo : !f.isVideo)
+    );
     botLog(`📁 ${client.name}: ${driveFiles.length} file(s) found`,'ok');
   } catch(e){ botLog(`✗ ${client.name}: ${e.message}`,'err'); setBotStatus(client.id,'error'); return 0; }
 
@@ -5132,6 +5253,25 @@ async function processDriveClient(client) {
       botLog(`⚠ Could not make ${df.name} public: ${e.message} — will download instead`,'warn');
     }
 
+    // If this video has a paired thumbnail image, make that public too so
+    // it can be handed to Meta as cover_url.
+    const pairedThumb = df.isVideo ? thumbByVideoId[df.id] : null;
+    let thumbPublicUrl = null;
+    if (pairedThumb) {
+      try {
+        const token = await getGoogleToken();
+        await fetch(`https://www.googleapis.com/drive/v3/files/${pairedThumb.id}/permissions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'reader', type: 'anyone' })
+        });
+        thumbPublicUrl = `https://drive.google.com/uc?id=${pairedThumb.id}&export=download`;
+        botLog(`🖼 ${pairedThumb.name} made public — using as thumbnail for ${df.name}`,'ok');
+      } catch(e) {
+        botLog(`⚠ Could not make thumbnail ${pairedThumb.name} public: ${e.message} — posting without a custom cover`,'warn');
+      }
+    }
+
     const fullCaption = `${generated.caption}\n\n${generated.hashtags||generated.tags.join(' ')}`;
     const publishAs = client.drivePublishAs === 'story' ? 'story' : 'post';
     const postTime = schedDate < new Date(Date.now()+11*60*1000) ? new Date(Date.now()+11*60*1000) : schedDate;
@@ -5154,6 +5294,8 @@ async function processDriveClient(client) {
       tags:generated.tags.join(','), hashtags:generated.hashtags||generated.tags.join(' '),
       mediaType:df.isVideo?'video':'image', scheduledDates:[postTime.toISOString()],
       status:'draft', metaPostIds:[], errorMessage:null, createdAt:now, updatedAt:now, driveFileId:df.id,
+      thumbnailFileName: pairedThumb ? pairedThumb.name : null,
+      thumbnailDriveFileId: pairedThumb ? pairedThumb.id : null,
       // Deferred Drive cleanup: keep the file until a week AFTER its scheduled
       // date (so it survives until it has actually published), then auto-delete.
       driveDeleteAfter: new Date(postTime.getTime() + 7*24*60*60*1000).toISOString(),
@@ -5173,6 +5315,18 @@ async function processDriveClient(client) {
             if (!fileObj) { fileObj = await downloadDriveFile(df.id, df.name); }
             mediaUrl = await uploadToImgbb(fileObj, target.token, target.pageId||target.accountId);
           }
+          // Resolve the paired thumbnail (if any) to a usable public URL for
+          // cover_url — same public-Drive-first, upload-as-fallback pattern
+          // as the main media above.
+          let thumbnailUrl = thumbPublicUrl;
+          if (df.isVideo && pairedThumb && !thumbnailUrl) {
+            try {
+              const thumbFileObj = await downloadDriveFile(pairedThumb.id, pairedThumb.name);
+              thumbnailUrl = await uploadToImgbb(thumbFileObj, target.token, target.pageId||target.accountId);
+            } catch(e) {
+              botLog(`⚠ Could not host thumbnail ${pairedThumb.name}: ${e.message} — posting without a custom cover`,'warn');
+            }
+          }
           let igId = target.accountId;
           if (target.pageId && target.token) {
             try {
@@ -5184,6 +5338,7 @@ async function processDriveClient(client) {
           const jobId = `ig_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
           // Stories ignore captions on IG — send an empty caption for story jobs.
           const job = {jobId,igId,fbToken:target.token,caption:(publishAs==='story'?'':fullCaption),mediaUrl,mediaType:df.isVideo?'video':'image',publishAs,scheduledUnix,accountName:target.accountName,clientId:client.id,scheduledPostId:postEntry.id,status:'pending'};
+          if (df.isVideo && thumbnailUrl) job.thumbnailUrl = thumbnailUrl;
           await Api.addIgJob(job);
           postEntry.metaPostIds.push(jobId);
           DB.postHistory.push({id:++DB._nextId,scheduledPostId:postEntry.id,clientId:client.id,metaAccountId:null,metaPostId:jobId,platform:'instagram',publishedAt:postTime.toISOString(),engagementMetrics:{},createdAt:now});
