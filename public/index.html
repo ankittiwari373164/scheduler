@@ -5256,15 +5256,24 @@ async function processDriveClient(client) {
     // If this video has a paired thumbnail image, make that public too so
     // it can be handed to Meta as cover_url.
     const pairedThumb = df.isVideo ? thumbByVideoId[df.id] : null;
+    if (df.isVideo) {
+      botLog(pairedThumb
+        ? `🔎 ${df.name}: matched thumbnail "${pairedThumb.name}"`
+        : `🔎 ${df.name}: no matching thumbnail found (expected same base name, e.g. "...V.mp4" + "...T.png")`, 'info');
+    }
     let thumbPublicUrl = null;
     if (pairedThumb) {
       try {
         const token = await getGoogleToken();
-        await fetch(`https://www.googleapis.com/drive/v3/files/${pairedThumb.id}/permissions`, {
+        const permRes = await fetch(`https://www.googleapis.com/drive/v3/files/${pairedThumb.id}/permissions`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ role: 'reader', type: 'anyone' })
         });
+        if (!permRes.ok) {
+          const errBody = await permRes.text().catch(()=> '');
+          throw new Error(`Drive permissions API returned ${permRes.status}: ${errBody.slice(0,200)}`);
+        }
         thumbPublicUrl = `https://drive.google.com/uc?id=${pairedThumb.id}&export=download`;
         botLog(`🖼 ${pairedThumb.name} made public — using as thumbnail for ${df.name}`,'ok');
       } catch(e) {
@@ -5339,6 +5348,7 @@ async function processDriveClient(client) {
           // Stories ignore captions on IG — send an empty caption for story jobs.
           const job = {jobId,igId,fbToken:target.token,caption:(publishAs==='story'?'':fullCaption),mediaUrl,mediaType:df.isVideo?'video':'image',publishAs,scheduledUnix,accountName:target.accountName,clientId:client.id,scheduledPostId:postEntry.id,status:'pending'};
           if (df.isVideo && thumbnailUrl) job.thumbnailUrl = thumbnailUrl;
+          if (df.isVideo) botLog(pairedThumb ? (thumbnailUrl ? `📎 cover attached: ${thumbnailUrl}` : `📎 cover NOT attached (thumbnail found but URL resolution failed — see warning above)`) : `📎 no cover (no matching thumbnail image in this Drive folder)`, thumbnailUrl ? 'ok' : 'warn');
           await Api.addIgJob(job);
           postEntry.metaPostIds.push(jobId);
           DB.postHistory.push({id:++DB._nextId,scheduledPostId:postEntry.id,clientId:client.id,metaAccountId:null,metaPostId:jobId,platform:'instagram',publishedAt:postTime.toISOString(),engagementMetrics:{},createdAt:now});
