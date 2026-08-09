@@ -1,25 +1,31 @@
 // api/auth/google/[action].js
-// Merged Google OAuth route. Sub-actions:
-//   GET   /api/auth/google/start          → redirect to Google consent
-//   GET   /api/auth/google/callback       → handle code, save tokens (HTML response)
-//   GET   /api/auth/google/status         → JSON {connected, email, name, picture}
-//   DELETE /api/auth/google/status        → disconnect
-//   GET   /api/auth/google/access-token   → mint fresh access token for frontend
+//
+// Handles BOTH Google OAuth flows in one Serverless Function (kept merged
+// deliberately — Vercel Hobby caps you at 12 functions total):
+//
+//   GOOGLE DRIVE (one shared token for the whole app):
+//     GET    /api/auth/google/start                    → redirect to consent
+//     GET    /api/auth/google/callback                 → handle code, save token
+//     GET    /api/auth/google/status                    → JSON {connected,...}
+//     DELETE /api/auth/google/status                    → disconnect
+//     GET    /api/auth/google/access-token               → mint fresh token
+//
+//   YOUTUBE (one token PER CLIENT — routed here via vercel.json rewrites
+//   that turn /api/auth/youtube/:action into ?service=youtube&action=:action):
+//     GET    /api/auth/youtube/start?clientId=5          → redirect to consent
+//     GET    /api/auth/youtube/callback                  → handle code, save token
+//     GET    /api/auth/youtube/status?clientId=5         → JSON {connected,...}
+//     DELETE /api/auth/youtube/status?clientId=5         → disconnect
 
-const {
-  buildAuthUrl,
-  exchangeCodeForTokens,
-  fetchUserInfo,
-  saveTokens,
-  getValidAccessToken,
-  getStatus,
-  disconnect
-} = require('../../_lib/googleOAuth');
+const googleOAuth = require('../../_lib/googleOAuth');
+const youtubeOAuth = require('../../_lib/youtubeOAuth');
 const { withCors, jsonResponse } = require('../../_lib/helpers');
 
-function closePage(message, isError = false) {
+function closePage(message, isError = false, kind = 'google') {
   const color = isError ? '#ef4444' : '#22c55e';
   const icon  = isError ? '✕' : '✓';
+  const title = isError ? 'Connection Failed' : (kind === 'youtube' ? 'YouTube Channel Connected' : 'Google Drive Connected');
+  const eventType = kind === 'youtube' ? 'youtube-oauth' : 'google-oauth';
   return `<!DOCTYPE html>
 <html><head><title>${isError ? 'Error' : 'Connected'}</title>
 <style>
@@ -35,14 +41,14 @@ function closePage(message, isError = false) {
 <body>
 <div class="card">
   <div class="icon">${icon}</div>
-  <h2>${isError ? 'Connection Failed' : 'Google Drive Connected'}</h2>
+  <h2>${title}</h2>
   <p>${message}</p>
   <div class="hint">You can close this window.</div>
 </div>
 <script>
   try {
     if (window.opener) {
-      window.opener.postMessage({type:'google-oauth', success:${!isError}, message:${JSON.stringify(message)}}, '*');
+      window.opener.postMessage({type:'${eventType}', success:${!isError}, message:${JSON.stringify(message)}}, '*');
     }
   } catch(e){}
   setTimeout(() => { try { window.close(); } catch(e){} }, 1500);
@@ -50,86 +56,118 @@ function closePage(message, isError = false) {
 </body></html>`;
 }
 
-// ─── Action handlers ──────────────────────────────────────────
+// ─── Google Drive handlers ──────────────────────────────────────
 
-async function handleStart(req, res) {
-  const url = buildAuthUrl(req.query.state || '');
+async function handleGoogleStart(req, res) {
+  const url = googleOAuth.buildAuthUrl(req.query.state || '');
   res.writeHead(302, { Location: url });
   res.end();
 }
 
-async function handleCallback(req, res) {
-  const code = req.query.code;
-  const error = req.query.error;
-
-  if (error) {
-    res.setHeader('Content-Type', 'text/html');
-    return res.status(400).send(closePage(`Google returned: ${error}`, true));
-  }
-  if (!code) {
-    res.setHeader('Content-Type', 'text/html');
-    return res.status(400).send(closePage('Missing authorization code', true));
-  }
-
+async function handleGoogleCallback(req, res) {
+  const { code, error } = req.query;
+  res.setHeader('Content-Type', 'text/html');
+  if (error) return res.status(400).send(closePage(`Google returned: ${error}`, true));
+  if (!code) return res.status(400).send(closePage('Missing authorization code', true));
   try {
-    const tokens = await exchangeCodeForTokens(code);
+    const tokens = await googleOAuth.exchangeCodeForTokens(code);
     if (!tokens.refresh_token) {
-      res.setHeader('Content-Type', 'text/html');
       return res.status(400).send(closePage(
-        'No refresh token received. Go to Google Account → Security → Third-party access → remove this app → try connecting again.',
-        true
+        'No refresh token received. Go to Google Account → Security → Third-party access → remove this app → try connecting again.', true
       ));
     }
-    const userInfo = await fetchUserInfo(tokens.access_token).catch(() => null);
-    await saveTokens(tokens, userInfo);
-    res.setHeader('Content-Type', 'text/html');
-    return res.status(200).send(closePage(
-      `Signed in as ${userInfo?.email || 'your Google account'}. Drive Bot can now run automatically.`,
-      false
-    ));
+    const userInfo = await googleOAuth.fetchUserInfo(tokens.access_token).catch(() => null);
+    await googleOAuth.saveTokens(tokens, userInfo);
+    return res.status(200).send(closePage(`Signed in as ${userInfo?.email || 'your Google account'}. Drive Bot can now run automatically.`, false));
   } catch (e) {
-    console.error('OAuth callback error:', e);
-    res.setHeader('Content-Type', 'text/html');
+    console.error('Google OAuth callback error:', e);
     return res.status(500).send(closePage(e.message || 'Unknown error', true));
   }
 }
 
-async function handleStatus(req, res) {
-  if (req.method === 'GET') {
-    const status = await getStatus();
-    return jsonResponse(res, 200, status);
-  }
-  if (req.method === 'DELETE') {
-    await disconnect();
-    return jsonResponse(res, 200, { ok: true, connected: false });
-  }
+async function handleGoogleStatus(req, res) {
+  if (req.method === 'GET') return jsonResponse(res, 200, await googleOAuth.getStatus());
+  if (req.method === 'DELETE') { await googleOAuth.disconnect(); return jsonResponse(res, 200, { ok: true, connected: false }); }
   jsonResponse(res, 405, { error: 'method not allowed' });
 }
 
-async function handleAccessToken(req, res) {
+async function handleGoogleAccessToken(req, res) {
   if (req.method !== 'GET') return jsonResponse(res, 405, { error: 'GET only' });
-  const status = await getStatus();
-  if (!status.connected) {
-    return jsonResponse(res, 400, {
-      error: 'Google Drive not connected. Connect in Settings → Google Drive.'
-    });
-  }
-  const accessToken = await getValidAccessToken();
+  const status = await googleOAuth.getStatus();
+  if (!status.connected) return jsonResponse(res, 400, { error: 'Google Drive not connected. Connect in Settings → Google Drive.' });
+  const accessToken = await googleOAuth.getValidAccessToken();
   jsonResponse(res, 200, { accessToken, expiresIn: 3300 });
+}
+
+// ─── YouTube (per-client) handlers ───────────────────────────────
+
+async function handleYoutubeStart(req, res) {
+  const clientId = req.query.clientId;
+  if (!clientId) return jsonResponse(res, 400, { error: 'clientId query param required' });
+  const url = youtubeOAuth.buildAuthUrl(clientId);
+  res.writeHead(302, { Location: url });
+  res.end();
+}
+
+async function handleYoutubeCallback(req, res) {
+  const { code, error, state: clientId } = req.query;
+  res.setHeader('Content-Type', 'text/html');
+  if (error) return res.status(400).send(closePage(`Google returned: ${error}`, true, 'youtube'));
+  if (!code || !clientId) return res.status(400).send(closePage('Missing authorization code or client', true, 'youtube'));
+  try {
+    const tokens = await youtubeOAuth.exchangeCodeForTokens(code);
+    if (!tokens.refresh_token) {
+      return res.status(400).send(closePage(
+        'No refresh token received. Go to Google Account → Security → Third-party access → remove this app → try connecting again.', true, 'youtube'
+      ));
+    }
+    const [userInfo, channelInfo] = await Promise.all([
+      youtubeOAuth.fetchUserInfo(tokens.access_token).catch(() => null),
+      youtubeOAuth.fetchChannelInfo(tokens.access_token).catch(() => null)
+    ]);
+    await youtubeOAuth.saveTokens(clientId, tokens, userInfo, channelInfo);
+    return res.status(200).send(closePage(
+      `Connected "${channelInfo?.title || 'your channel'}" (${userInfo?.email || 'unknown account'}). Auto YouTube uploads can now run.`, false, 'youtube'
+    ));
+  } catch (e) {
+    console.error('YouTube OAuth callback error:', e);
+    return res.status(500).send(closePage(e.message || 'Unknown error', true, 'youtube'));
+  }
+}
+
+async function handleYoutubeStatus(req, res) {
+  const clientId = req.query.clientId;
+  if (!clientId) return jsonResponse(res, 400, { error: 'clientId query param required' });
+  if (req.method === 'GET') return jsonResponse(res, 200, await youtubeOAuth.getStatusForClient(clientId));
+  if (req.method === 'DELETE') { await youtubeOAuth.disconnectClient(clientId); return jsonResponse(res, 200, { ok: true, connected: false }); }
+  jsonResponse(res, 405, { error: 'method not allowed' });
 }
 
 // ─── Router ───────────────────────────────────────────────────
 
 module.exports = withCors(async (req, res) => {
   const action = req.query.action;
+  // vercel.json rewrites /api/auth/youtube/:action here with ?service=youtube.
+  // The callback URL registered with Google is fixed at OAuth-setup time and
+  // has no query string of our choosing, so it disambiguates by `state`
+  // instead (youtubeOAuth.buildAuthUrl puts the clientId in `state`, so a
+  // present-and-numeric `state` on the callback means "this is a YouTube flow").
+  const isYoutube = req.query.service === 'youtube' || (action === 'callback' && /^\d+$/.test(req.query.state || ''));
+
+  if (isYoutube) {
+    switch (action) {
+      case 'start':    return handleYoutubeStart(req, res);
+      case 'callback': return handleYoutubeCallback(req, res);
+      case 'status':   return handleYoutubeStatus(req, res);
+      default: return jsonResponse(res, 404, { error: `Unknown YouTube action "${action}". Valid: start, callback, status` });
+    }
+  }
+
   switch (action) {
-    case 'start':         return handleStart(req, res);
-    case 'callback':      return handleCallback(req, res);
-    case 'status':        return handleStatus(req, res);
-    case 'access-token':  return handleAccessToken(req, res);
-    default:
-      return jsonResponse(res, 404, {
-        error: `Unknown action "${action}". Valid: start, callback, status, access-token`
-      });
+    case 'start':         return handleGoogleStart(req, res);
+    case 'callback':      return handleGoogleCallback(req, res);
+    case 'status':         return handleGoogleStatus(req, res);
+    case 'access-token':  return handleGoogleAccessToken(req, res);
+    default: return jsonResponse(res, 404, { error: `Unknown action "${action}". Valid: start, callback, status, access-token` });
   }
 });
