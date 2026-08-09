@@ -16,8 +16,22 @@
 // — just moved to the server so it works without a browser tab open.
 //
 
-const { getCollection } = require('../_lib/db');
-const { jsonResponse, withCors, requireAdminToken } = require('../_lib/helpers');
+// api/_lib/igPublisher.js
+//
+// Core Instagram-queue publishing logic. Moved out of api/cron/ (and into
+// _lib, which Vercel does NOT treat as routable) so it doesn't count
+// against the Hobby plan's 12-Serverless-Function limit — the only public
+// entry point that calls this is api/cron/publish-all.js.
+//
+// Flow per job:
+//   1. Mark job as 'processing' (atomic so no other cron run picks it up)
+//   2. Create IG media container (image_url for image, video_url for reel)
+//   3. For reels: poll status until FINISHED (up to ~2 min)
+//   4. Call media_publish with the container ID
+//   5. Update job to 'done' (with metaPostId) or 'failed' (with lastError)
+//   6. Add a postHistory row for accounting
+
+const { getCollection } = require('./db');
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
 
@@ -325,18 +339,4 @@ async function runPublishIgQueue() {
   return { ok: true, processed: results.length, results };
 }
 
-module.exports = withCors(async (req, res) => {
-  // If ADMIN_TOKEN is configured, require it for manual invocations.
-  // Vercel Cron sends the request internally without our header, but with
-  // a special `x-vercel-cron` header — so we allow that pathway too.
-  const isVercelCron = !!req.headers['x-vercel-cron'];
-  if (!isVercelCron && process.env.ADMIN_TOKEN) {
-    try { requireAdminToken(req); }
-    catch (e) { return jsonResponse(res, 401, { error: e.message }); }
-  }
-
-  const result = await runPublishIgQueue();
-  jsonResponse(res, 200, result);
-});
-
-module.exports.runPublishIgQueue = runPublishIgQueue;
+module.exports = { runPublishIgQueue };
