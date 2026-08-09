@@ -1,16 +1,20 @@
 // api/cron/publish-all.js
 //
-// Runs frequently (every 30 min, see vercel.json) and processes BOTH the
-// Instagram queue and the YouTube queue in one request. Exists purely to
-// keep the project at 2 total Vercel cron jobs instead of 3 — Vercel's
-// Hobby plan caps you at 2. If you're on Pro and want them split apart
-// again for clarity/isolation, just point vercel.json's two schedules back
-// at /api/cron/publish-ig and /api/cron/publish-youtube directly — both
-// still work standalone, this file just calls into the same functions.
+// Runs once a day (see vercel.json — Vercel Hobby caps you at 2 total cron
+// jobs, each at most once/day). Processes BOTH the Instagram queue and the
+// YouTube queue in one request. For closer-to-on-time publishing than
+// once/day, hit this endpoint from a free external scheduler too (e.g.
+// cron-job.org every 15-30 min) — it's a normal HTTP endpoint, only
+// Vercel's own cron trigger is rate-limited on Hobby.
+//
+// The actual publishing logic lives in api/_lib/igPublisher.js and
+// api/_lib/ytPublisher.js (NOT api/cron/) specifically so those don't each
+// count as their own Serverless Function against Hobby's 12-function cap —
+// this file is the only public route for both.
 
 const { withCors, jsonResponse, requireAdminToken } = require('../_lib/helpers');
-const { runPublishIgQueue } = require('./publish-ig');
-const { runPublishYoutubeQueue } = require('./publish-youtube');
+const { runPublishIgQueue } = require('../_lib/igPublisher');
+const { runPublishYoutubeQueue } = require('../_lib/ytPublisher');
 
 module.exports = withCors(async (req, res) => {
   const isVercelCron = !!req.headers['x-vercel-cron'];
