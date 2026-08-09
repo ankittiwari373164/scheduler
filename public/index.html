@@ -2492,6 +2492,7 @@ function renderClientGrid() {
         ${hasDrive ? `<div class="client-btn" style="background:rgba(66,133,244,.1);color:#7baaf7;border-color:rgba(66,133,244,.2)" onclick="runDriveBotForClient(${c.id})">🤖 Bot</div>` : ''}
         <div class="client-btn primary" onclick="scheduleForClient(${c.id})">Schedule →</div>
         <div class="client-btn" style="background:rgba(255,82,82,.1);color:#ff8a8a;border-color:rgba(255,82,82,.2)" onclick="openYouTubeForClient(${c.id})">▶ YouTube</div>
+        <div class="client-btn" style="background:rgba(255,82,82,.1);color:#ff8a8a;border-color:rgba(255,82,82,.2)" onclick="connectAutoYoutube(${c.id})" title="Connects a stored refresh token so Drive Bot can auto-upload this client's videos to YouTube with no browser tab open. Separate from the manual upload flow.">🔁 Auto YT</div>
         <div class="client-btn" onclick="deleteClient(${c.id})" style="color:var(--red)">Del</div>
       </div>
     </div>`;
@@ -4140,7 +4141,37 @@ window.addEventListener('message', (e) => {
       toast('Google connection failed: ' + (e.data.message || 'unknown'), 'error');
     }
   }
+  if (e.data && e.data.type === 'youtube-oauth') {
+    if (e.data.success) { toast('✅ YouTube channel connected for auto-upload!', 'success'); renderClients(); }
+    else toast('YouTube connection failed: ' + (e.data.message || 'unknown'), 'error');
+  }
 });
+
+// ════════════════════════════════════════════════
+//  PER-CLIENT AUTO-YOUTUBE OAUTH
+//  Separate from the manual browser-upload flow on the YouTube page —
+//  this stores a real refresh token server-side so Drive Bot can upload
+//  to this client's channel automatically, with no tab open.
+// ════════════════════════════════════════════════
+async function connectAutoYoutube(clientId) {
+  const w = 520, h = 640;
+  const left = (screen.width - w) / 2, top = (screen.height - h) / 2;
+  const popup = window.open(`/api/auth/youtube/start?clientId=${clientId}`, 'youtube_oauth', `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`);
+  if (!popup) { toast('Popup blocked — allow popups and try again', 'error'); return; }
+  toast('Sign in with the client\'s YouTube Google account in the popup…', 'info');
+}
+
+async function autoYoutubeStatus(clientId) {
+  try { const r = await fetch(`/api/auth/youtube/status?clientId=${clientId}`); return await r.json(); }
+  catch(_) { return { connected: false }; }
+}
+
+async function disconnectAutoYoutube(clientId) {
+  if (!confirm('Disconnect auto-YouTube for this client? Scheduled Drive→YouTube uploads will stop until reconnected.')) return;
+  await fetch(`/api/auth/youtube/status?clientId=${clientId}`, { method: 'DELETE' });
+  toast('Auto-YouTube disconnected', 'success');
+  renderClients();
+}
 
 async function disconnectGoogle() {
   if (!confirm('Disconnect Google Drive? The Drive Bot will stop working.')) return;
