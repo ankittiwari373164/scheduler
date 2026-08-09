@@ -27,7 +27,7 @@
     },
     {
       "path": "/api/cron/publish-all",
-      "schedule": "0/30 * * * *"
+      "schedule": "0 13 * * *"
     }
   ]
 }
