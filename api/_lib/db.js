@@ -73,7 +73,10 @@ const COLLECTIONS = {
   postHistory:     'mf_postHistory',
   igQueue:         'mf_igQueue',
   config:          'mf_config',
-  googleTokens:    'mf_googleTokens'
+  googleTokens:    'mf_googleTokens',
+  youtubeTokens:   'mf_youtubeTokens',
+  ytQueue:         'mf_ytQueue',
+  botRuns:         'mf_botRuns'
 };
 
 async function getCollection(name) {
