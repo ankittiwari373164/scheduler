@@ -237,16 +237,7 @@ async function publishOne(job) {
   return pubData.id || containerId;
 }
 
-module.exports = withCors(async (req, res) => {
-  // If ADMIN_TOKEN is configured, require it for manual invocations.
-  // Vercel Cron sends the request internally without our header, but with
-  // a special `x-vercel-cron` header — so we allow that pathway too.
-  const isVercelCron = !!req.headers['x-vercel-cron'];
-  if (!isVercelCron && process.env.ADMIN_TOKEN) {
-    try { requireAdminToken(req); }
-    catch (e) { return jsonResponse(res, 401, { error: e.message }); }
-  }
-
+async function runPublishIgQueue() {
   const queue = await getCollection('igQueue');
   const history = await getCollection('postHistory');
   const now = Math.floor(Date.now() / 1000);
@@ -272,7 +263,7 @@ module.exports = withCors(async (req, res) => {
   }
 
   if (!claimed.length) {
-    return jsonResponse(res, 200, { ok: true, processed: 0, message: 'no due jobs' });
+    return { ok: true, processed: 0, message: 'no due jobs' };
   }
 
   const results = [];
@@ -331,5 +322,21 @@ module.exports = withCors(async (req, res) => {
     }
   }
 
-  jsonResponse(res, 200, { ok: true, processed: results.length, results });
+  return { ok: true, processed: results.length, results };
+}
+
+module.exports = withCors(async (req, res) => {
+  // If ADMIN_TOKEN is configured, require it for manual invocations.
+  // Vercel Cron sends the request internally without our header, but with
+  // a special `x-vercel-cron` header — so we allow that pathway too.
+  const isVercelCron = !!req.headers['x-vercel-cron'];
+  if (!isVercelCron && process.env.ADMIN_TOKEN) {
+    try { requireAdminToken(req); }
+    catch (e) { return jsonResponse(res, 401, { error: e.message }); }
+  }
+
+  const result = await runPublishIgQueue();
+  jsonResponse(res, 200, result);
 });
+
+module.exports.runPublishIgQueue = runPublishIgQueue;
