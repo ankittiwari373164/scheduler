@@ -87,6 +87,48 @@ async function deleteDriveFile(token, fileId) {
   catch (e) { /* best-effort */ }
 }
 
+// Facebook Pages support native scheduled publishing (published:false +
+// scheduled_publish_time), so — unlike Instagram, which has no such native
+// concept and needs our own igQueue + cron to fire at the right minute —
+// we just make ONE Graph API call right now, passing the future timestamp,
+// and Meta itself publishes it later. No queue, no separate cron needed.
+async function postToFacebookAuto(target, caption, mediaUrl, isVideo, scheduledUnix) {
+  const { accountId, token } = target;
+  if (isVideo) {
+    const body = new URLSearchParams({
+      description: caption, published: 'false', scheduled_publish_time: String(scheduledUnix),
+      file_url: mediaUrl, access_token: token
+    });
+    const res = await fetch(`https://graph.facebook.com/v19.0/${accountId}/videos`, { method: 'POST', body });
+    const data = await res.json();
+    if (data.error) throw new Error(`[${data.error.code}] ${data.error.message}`);
+    return data.id;
+  }
+  const up = new URLSearchParams({ url: mediaUrl, published: 'false', access_token: token });
+  const upRes = await fetch(`https://graph.facebook.com/v19.0/${accountId}/photos`, { method: 'POST', body: up });
+  const upData = await upRes.json();
+  if (upData.error) throw new Error(`Photo upload: [${upData.error.code}] ${upData.error.message}`);
+
+  const feed = new URLSearchParams({
+    message: caption, published: 'false', scheduled_publish_time: String(scheduledUnix),
+    'attached_media[0]': JSON.stringify({ media_fbid: upData.id }), access_token: token
+  });
+  const feedRes = await fetch(`https://graph.facebook.com/v19.0/${accountId}/feed`, { method: 'POST', body: feed });
+  const feedData = await feedRes.json();
+  if (!feedData.error && (feedData.id || feedData.post_id)) return feedData.id || feedData.post_id;
+
+  // Fallback: some Pages reject the two-step attached_media flow — post the
+  // photo directly with a caption + schedule instead (mirrors the browser's
+  // fallback path).
+  const fb2 = new URLSearchParams({
+    url: mediaUrl, caption, published: 'false', scheduled_publish_time: String(scheduledUnix), access_token: token
+  });
+  const fb2Res = await fetch(`https://graph.facebook.com/v19.0/${accountId}/photos`, { method: 'POST', body: fb2 });
+  const fb2Data = await fb2Res.json();
+  if (fb2Data.error) throw new Error(`[${fb2Data.error.code}] ${fb2Data.error.message}`);
+  return fb2Data.id;
+}
+
 async function generateCaption(cfg, client, brandDoc, fileName, mediaType) {
   if (!cfg.aiServerUrl) throw new Error('No ChatGPT server URL configured (Settings → ChatGPT server).');
   const topic = fileName.replace(/\.[^/.]+$/,'').replace(/[-_]+/g,' ').replace(/\b\w/g,x=>x.toUpperCase());
@@ -316,7 +358,19 @@ async function runForClient(client, ctx) {
     let queuedAny = false;
 
     for (const target of uniqueTargets) {
-      if (target.accountType !== 'instagram_business') continue; // FB scheduling omitted server-side (Drive Bot's core use case is IG)
+      if (target.accountType === 'facebook_page') {
+        try {
+          const fbCaption = publishAs === 'story' ? '' : fullCaption; // FB has no native "story" scheduling via this endpoint — treat as a normal feed post
+          const fbPostId = await postToFacebookAuto(target, fbCaption, drivePublicUrl, df.isVideo, scheduledUnix);
+          postEntry.metaPostIds.push(fbPostId);
+          queuedAny = true;
+          push(`📘 ${df.name} → Facebook Page "${target.accountName}" scheduled (Meta will publish it natively)`, 'ok');
+        } catch (e) {
+          push(`✗ Facebook post failed for ${target.accountName}: ${e.message}`, 'err');
+        }
+        continue;
+      }
+      if (target.accountType !== 'instagram_business') continue;
       const jobId = `ig_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
       const job = {
         jobId, igId: target.accountId, fbToken: target.token,
