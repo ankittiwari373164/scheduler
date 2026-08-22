@@ -83,8 +83,18 @@ async function makeFilePublic(token, fileId) {
 }
 
 async function deleteDriveFile(token, fileId) {
-  try { await fetch(`${DRIVE_API}/files/${fileId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); }
-  catch (e) { /* best-effort */ }
+  // Moves to Trash (recoverable for 30 days) instead of a hard DELETE —
+  // a hard DELETE bypasses Drive's trash entirely and is not recoverable
+  // through the normal Drive UI. This is a deliberate safety margin: if a
+  // file gets flagged for cleanup incorrectly, you have a month to notice
+  // and restore it from Drive's own Trash folder.
+  try {
+    await fetch(`${DRIVE_API}/files/${fileId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trashed: true })
+    });
+  } catch (e) { /* best-effort */ }
 }
 
 // Facebook Pages support native scheduled publishing (published:false +
@@ -330,6 +340,11 @@ async function runForClient(client, ctx) {
     catch (e) { push(`✗ could not make ${df.name} public: ${e.message} — skipping`, 'err'); continue; }
 
     const pairedThumb = df.isVideo ? thumbByVideoId[df.id] : null;
+    if (df.isVideo) {
+      push(pairedThumb
+        ? `🔎 ${df.name}: matched thumbnail "${pairedThumb.name}"`
+        : `🔎 ${df.name}: no matching thumbnail found (expected same base name, e.g. "...V.mp4" + "...T.png")`, 'info');
+    }
     let thumbPublicUrl = null;
     if (pairedThumb) {
       try { thumbPublicUrl = await makeFilePublic(driveToken, pairedThumb.id); push(`🖼 ${pairedThumb.name} → cover for ${df.name}`, 'ok'); }
@@ -379,6 +394,7 @@ async function runForClient(client, ctx) {
         accountName: target.accountName, clientId: client.id, scheduledPostId: postEntry.id, status: 'pending'
       };
       if (df.isVideo && thumbPublicUrl) job.thumbnailUrl = thumbPublicUrl;
+      if (df.isVideo) push(pairedThumb ? (thumbPublicUrl ? `📎 cover attached to IG job: ${thumbPublicUrl}` : `📎 cover NOT attached (thumbnail found but making it public failed — see warning above)`) : `📎 no cover (no matching thumbnail image in this Drive folder)`, thumbPublicUrl ? 'ok' : 'warn');
       await igQueueCol.insertOne({ ...job, id: await nextIdFor(ctx,'igQueue'), attempts:0, lastError:null, metaPostId:null, createdAt: now, updatedAt: now });
       postEntry.metaPostIds.push(jobId);
       queuedAny = true;
@@ -418,12 +434,21 @@ async function nextIdFor(ctx, kind) {
 
 // Deletes Drive files (and their paired thumbnail) whose 1-week-after-
 // schedule window has passed. Mirrors the browser's purgeDueDriveFiles().
+//
+// IMPORTANT: driveDeleteAfter must be checked with $type + $lte, NOT
+// $ne: null. In MongoDB, a MISSING field satisfies {$ne: null} (it's not
+// equal to null, it's just absent) and also sorts as less than any date
+// string for {$lte} — so a loose $ne/$lte combo matches every record that
+// never had driveDeleteAfter set at all, i.e. your entire pre-existing
+// history. That bug caused a mass deletion; this explicit $type guard
+// is what prevents it from ever happening again.
 async function purgeDueDriveFiles(ctx) {
   const { scheduledPostsCol, driveToken } = ctx;
   const now = Date.now();
   const due = await scheduledPostsCol.find({
-    driveFileId: { $ne: null }, driveDeleted: { $ne: true },
-    driveDeleteAfter: { $ne: null, $lte: new Date(now).toISOString() }
+    driveFileId: { $ne: null },
+    driveDeleted: { $ne: true },
+    driveDeleteAfter: { $type: 'string', $lte: new Date(now).toISOString() }
   }).toArray();
   let removed = 0;
   const seen = new Set();
