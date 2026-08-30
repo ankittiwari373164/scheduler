@@ -1,9 +1,22 @@
 // api/cron/drive-bot.js
 //
-// Runs every morning (see vercel.json crons). For every client with a
-// Drive link configured, scans their Drive folder, pairs videos with
-// thumbnails, generates captions, and queues IG jobs (+ YouTube jobs for
-// clients with a connected auto-YouTube channel) — no browser tab needed.
+// Vercel's own cron (see vercel.json) fires this once a day as a baseline.
+// For real "check every hour" behavior — needed because Vercel Hobby caps
+// each cron schedule at once/day — hit this same endpoint from an external
+// scheduler (e.g. cron-job.org) every hour too, same as publish-all:
+//   https://YOUR-APP.vercel.app/api/cron/drive-bot?token=YOUR_ADMIN_TOKEN
+//
+// This is SAFE to call as often as you like — it's fully idempotent. Every
+// run only processes files that don't already have a scheduledPosts record
+// (see `newFiles` filtering inside runForClient), so calling it hourly just
+// means a file that failed (e.g. a transient ChatGPT-server or Drive-API
+// error) gets retried within the hour instead of waiting a full day, and
+// re-running when nothing's new is just a cheap no-op per client.
+//
+// For every client with a Drive link configured, scans their Drive folder,
+// pairs videos with thumbnails, generates captions, and queues IG jobs
+// (+ YouTube jobs for clients with a connected auto-YouTube channel) — no
+// browser tab needed.
 //
 // This REPLACES manually clicking "Run Now" for automatic operation. The
 // manual button in the UI still works too (e.g. to force an immediate run).
