@@ -32,12 +32,30 @@ async function fetchDriveFolderFiles(token, folderId) {
   const mimeTypes = acceptedExts.map(e => `mimeType='${mimeMap[e]}'`).join(' or ');
   const q = encodeURIComponent(`'${folderId}' in parents and trashed=false and (${mimeTypes})`);
   const fields = encodeURIComponent('files(id,name,mimeType,size)');
-  const res = await fetch(`${DRIVE_API}/files?q=${q}&fields=${fields}&pageSize=100`, {
+  // supportsAllDrives + includeItemsFromAllDrives: without these, the Drive
+  // API silently returns 403/empty for folders that live inside a Shared
+  // Drive (Team Drive) rather than someone's personal My Drive — EVEN IF
+  // sharing permissions are otherwise completely correct. This tripped up
+  // "Manofox Pvt. Ltd" specifically because that folder is in a Shared Drive.
+  const res = await fetch(`${DRIVE_API}/files?q=${q}&fields=${fields}&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (res.status === 401) throw new Error('Google token expired/invalid — reconnect in Settings → Google Drive.');
-  if (res.status === 403) throw new Error('Permission denied — make sure the folder is shared with the connected account.');
-  if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(`Drive API error ${res.status}: ${e?.error?.message || res.statusText}`); }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    const reason = e?.error?.errors?.[0]?.reason || '';
+    const msg = e?.error?.message || res.statusText;
+    // A 403 from Drive is NOT always "not shared" — it's also the status
+    // code for rate-limit errors (reason: userRateLimitExceeded /
+    // rateLimitExceeded / dailyLimitExceeded), which we were previously
+    // masking with a generic "make sure it's shared" message even when the
+    // folder access itself was completely fine. Surface Google's real
+    // reason so this doesn't get misdiagnosed again.
+    if (res.status === 403 && /rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded/.test(reason)) {
+      throw new Error(`Google Drive API rate limit hit (${reason}): ${msg}. Not a sharing/permissions problem — will succeed on retry once the quota window resets.`);
+    }
+    throw new Error(`Drive API error ${res.status}${reason ? ` [${reason}]` : ''}: ${msg}`);
+  }
   const data = await res.json();
   return (data.files || []).map(f => {
     const ext = f.name.split('.').pop().toLowerCase();
@@ -73,7 +91,7 @@ function pairDriveThumbnails(files) {
 }
 
 async function makeFilePublic(token, fileId) {
-  const res = await fetch(`${DRIVE_API}/files/${fileId}/permissions`, {
+  const res = await fetch(`${DRIVE_API}/files/${fileId}/permissions?supportsAllDrives=true`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ role: 'reader', type: 'anyone' })
@@ -89,7 +107,7 @@ async function deleteDriveFile(token, fileId) {
   // file gets flagged for cleanup incorrectly, you have a month to notice
   // and restore it from Drive's own Trash folder.
   try {
-    await fetch(`${DRIVE_API}/files/${fileId}`, {
+    await fetch(`${DRIVE_API}/files/${fileId}?supportsAllDrives=true`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ trashed: true })
@@ -224,6 +242,24 @@ async function ensureIgTargetsForClient(cfg, client, targets, metaAccountsCol) {
 
 const ALL_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
+// Retries a transient-prone async call a couple of times with a short
+// backoff before giving up — covers momentary blips in the ChatGPT server
+// or Drive API without waiting for the next full cron run to retry. A file
+// that still fails after these retries stays unscheduled and WILL be
+// retried automatically on the next cron run too (it's never marked done),
+// but this closes the gap for "worked on the 2nd try" cases immediately.
+async function withRetries(fn, { attempts = 3, baseDelayMs = 1500 } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn(); }
+    catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 // Runs the full pipeline for one client. Returns { scheduled, log[] }.
 async function runForClient(client, ctx) {
   const log = [];
@@ -332,12 +368,12 @@ async function runForClient(client, ctx) {
     if (!schedDate) { push(`⚠ ran out of schedule dates`, 'warn'); break; }
 
     let generated;
-    try { generated = await generateCaption(cfg, client, brandDoc, df.name, df.isVideo?'video':'image'); }
-    catch (e) { push(`✗ ChatGPT error for ${df.name}: ${e.message}`, 'err'); continue; }
+    try { generated = await withRetries(() => generateCaption(cfg, client, brandDoc, df.name, df.isVideo?'video':'image')); }
+    catch (e) { push(`✗ ChatGPT error for ${df.name} (after retries): ${e.message} — will retry again next run`, 'err'); continue; }
 
     let drivePublicUrl = null;
-    try { drivePublicUrl = await makeFilePublic(driveToken, df.id); }
-    catch (e) { push(`✗ could not make ${df.name} public: ${e.message} — skipping`, 'err'); continue; }
+    try { drivePublicUrl = await withRetries(() => makeFilePublic(driveToken, df.id)); }
+    catch (e) { push(`✗ could not make ${df.name} public (after retries): ${e.message} — will retry again next run`, 'err'); continue; }
 
     const pairedThumb = df.isVideo ? thumbByVideoId[df.id] : null;
     if (df.isVideo) {
@@ -395,27 +431,43 @@ async function runForClient(client, ctx) {
       };
       if (df.isVideo && thumbPublicUrl) job.thumbnailUrl = thumbPublicUrl;
       if (df.isVideo) push(pairedThumb ? (thumbPublicUrl ? `📎 cover attached to IG job: ${thumbPublicUrl}` : `📎 cover NOT attached (thumbnail found but making it public failed — see warning above)`) : `📎 no cover (no matching thumbnail image in this Drive folder)`, thumbPublicUrl ? 'ok' : 'warn');
-      await igQueueCol.insertOne({ ...job, id: await nextIdFor(ctx,'igQueue'), attempts:0, lastError:null, metaPostId:null, createdAt: now, updatedAt: now });
-      postEntry.metaPostIds.push(jobId);
-      queuedAny = true;
+      try {
+        await igQueueCol.insertOne({ ...job, id: await nextIdFor(ctx,'igQueue'), attempts:0, lastError:null, metaPostId:null, createdAt: now, updatedAt: now });
+        postEntry.metaPostIds.push(jobId);
+        queuedAny = true;
+      } catch (e) {
+        push(`✗ Failed to queue IG job for ${target.accountName}: ${e.message}`, 'err');
+      }
     }
 
     if (df.isVideo && wantsYoutube && ytConnected) {
-      await ytQueueCol.insertOne({
-        id: await nextIdFor(ctx,'ytQueue'), clientId: client.id, driveFileId: df.id, fileName: df.name,
-        title: generated.title, description: generated.caption, tags: generated.tags.map(t=>t.replace(/^#/,'')),
-        scheduledPostId: postEntry.id, scheduledUnix, status: 'pending', attempts: 0, lastError: null,
-        youtubeVideoId: null, createdAt: now, updatedAt: now
-      });
-      queuedAny = true;
-      push(`📺 ${df.name} queued for YouTube`, 'ok');
+      try {
+        await ytQueueCol.insertOne({
+          id: await nextIdFor(ctx,'ytQueue'), clientId: client.id, driveFileId: df.id, fileName: df.name,
+          title: generated.title, description: generated.caption, tags: generated.tags.map(t=>t.replace(/^#/,'')),
+          scheduledPostId: postEntry.id, scheduledUnix, status: 'pending', attempts: 0, lastError: null,
+          youtubeVideoId: null, createdAt: now, updatedAt: now
+        });
+        queuedAny = true;
+        push(`📺 ${df.name} queued for YouTube`, 'ok');
+      } catch (e) {
+        push(`✗ Failed to queue YouTube job for ${df.name}: ${e.message}`, 'err');
+      }
     }
 
     if (!queuedAny) { push(`⚠ ${df.name}: nothing to queue it to (no IG targets, no connected auto-YouTube) — skipped`, 'warn'); continue; }
 
-    await scheduledPostsCol.insertOne(postEntry);
-    scheduled++;
-    push(`✓ ${df.name} scheduled @ ${postTime.toISOString()}`, 'ok');
+    try {
+      await scheduledPostsCol.insertOne(postEntry);
+      scheduled++;
+      push(`✓ ${df.name} scheduled @ ${postTime.toISOString()}`, 'ok');
+    } catch (e) {
+      // The IG/YT jobs above already got queued at this point — losing the
+      // scheduledPosts record itself just means this file might get
+      // considered "not yet done" and reprocessed next run (harmless
+      // duplicate risk vs. losing tracking entirely).
+      push(`✗ Failed to save schedule record for ${df.name}: ${e.message} — jobs were still queued`, 'err');
+    }
   }
 
   return { scheduled, log };
