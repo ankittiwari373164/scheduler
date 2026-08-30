@@ -14,6 +14,7 @@
 
 const { getCollection } = require('./db');
 const { getValidAccessToken } = require('./googleOAuth');
+const { withRetries } = require('./retry');
 const { getStatusForClient: getYtStatusForClient } = require('./youtubeOAuth');
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -248,17 +249,8 @@ const ALL_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 // that still fails after these retries stays unscheduled and WILL be
 // retried automatically on the next cron run too (it's never marked done),
 // but this closes the gap for "worked on the 2nd try" cases immediately.
-async function withRetries(fn, { attempts = 3, baseDelayMs = 1500 } = {}) {
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try { return await fn(); }
-    catch (e) {
-      lastErr = e;
-      if (i < attempts - 1) await new Promise(r => setTimeout(r, baseDelayMs * (i + 1)));
-    }
-  }
-  throw lastErr;
-}
+// (withRetries is now shared — see api/_lib/retry.js — also used by
+// ytPublisher.js for the same reason.)
 
 // Runs the full pipeline for one client. Returns { scheduled, log[] }.
 async function runForClient(client, ctx) {
