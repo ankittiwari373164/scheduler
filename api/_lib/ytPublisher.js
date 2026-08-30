@@ -9,12 +9,23 @@
 // source video from Drive, and uploads it to the CLIENT's own YouTube
 // channel (each client has its own OAuth refresh token — see
 // api/_lib/youtubeOAuth.js) via YouTube's resumable upload protocol.
+//
+// Reliability: call this endpoint (via publish-all) on an hourly external
+// cron (Vercel Hobby caps its own cron at once/day — see the comment in
+// api/cron/drive-bot.js for the same workaround). Each step here also
+// retries transient failures in-run via withRetries, and a job only gets
+// permanently marked 'failed' after MAX_ATTEMPTS hourly cron passes — not
+// after 3 tries within a single run — so a temporary token hiccup or a
+// YouTube quota blip has hours, not seconds, to resolve itself before this
+// gives up on a video for good.
 
 const { getCollection } = require('./db');
 const { getValidAccessToken } = require('./googleOAuth');
 const { getValidAccessTokenForClient } = require('./youtubeOAuth');
+const { withRetries } = require('./retry');
 
 const YT_UPLOAD = 'https://www.googleapis.com/upload/youtube/v3/videos';
+const MAX_ATTEMPTS = 8; // ~8 hourly cron passes before giving up for good
 
 async function downloadFromDrive(driveToken, fileId) {
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
@@ -75,15 +86,16 @@ async function runPublishYoutubeQueue() {
   const results = [];
   for (const job of claimed) {
     try {
-      const driveToken = await getValidAccessToken();
-      const { accessToken: ytToken } = await getValidAccessTokenForClient(job.clientId);
-      const { buf, contentType } = await downloadFromDrive(driveToken, job.driveFileId);
-      const videoId = await uploadToYoutube(ytToken, buf, contentType, { title: job.title, description: job.description, tags: job.tags || [] });
-      await queue.updateOne({ id: job.id }, { $set: { status: 'done', youtubeVideoId: videoId, updatedAt: new Date().toISOString() } });
+      const driveToken = await withRetries(() => getValidAccessToken());
+      const { accessToken: ytToken } = await withRetries(() => getValidAccessTokenForClient(job.clientId));
+      const { buf, contentType } = await withRetries(() => downloadFromDrive(driveToken, job.driveFileId));
+      const videoId = await withRetries(() => uploadToYoutube(ytToken, buf, contentType, { title: job.title, description: job.description, tags: job.tags || [] }), { attempts: 2 }); // don't re-upload a multi-hundred-MB file 3x on a partial failure
+      await queue.updateOne({ id: job.id }, { $set: { status: 'done', youtubeVideoId: videoId, lastError: null, updatedAt: new Date().toISOString() } });
       results.push({ id: job.id, ok: true, videoId });
     } catch (e) {
-      await queue.updateOne({ id: job.id }, { $set: { status: job.attempts >= 3 ? 'failed' : 'pending', lastError: e.message, updatedAt: new Date().toISOString() } });
-      results.push({ id: job.id, ok: false, error: e.message });
+      const stillRetrying = job.attempts < MAX_ATTEMPTS;
+      await queue.updateOne({ id: job.id }, { $set: { status: stillRetrying ? 'pending' : 'failed', lastError: e.message, updatedAt: new Date().toISOString() } });
+      results.push({ id: job.id, ok: false, error: e.message, willRetry: stillRetrying, attempts: job.attempts });
     }
   }
 
