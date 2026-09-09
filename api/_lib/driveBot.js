@@ -15,6 +15,7 @@
 const { getCollection } = require('./db');
 const { getValidAccessToken } = require('./googleOAuth');
 const { withRetries } = require('./retry');
+const { callGroq } = require('./groq');
 const { getStatusForClient: getYtStatusForClient } = require('./youtubeOAuth');
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -159,7 +160,6 @@ async function postToFacebookAuto(target, caption, mediaUrl, isVideo, scheduledU
 }
 
 async function generateCaption(cfg, client, brandDoc, fileName, mediaType) {
-  if (!cfg.aiServerUrl) throw new Error('No ChatGPT server URL configured (Settings → ChatGPT server).');
   const topic = fileName.replace(/\.[^/.]+$/,'').replace(/[-_]+/g,' ').replace(/\b\w/g,x=>x.toUpperCase());
   const brand = brandDoc ? brandDoc.content : `Brand: ${client.name}. Type: ${client.businessType||'Business'}.`;
   const contactParts = [];
@@ -188,21 +188,41 @@ ${contactParts.length ? '- After the CTA, on new lines, paste the MANDATORY CONT
 Return ONLY valid JSON, no markdown fences:
 {"title":"Short punchy title (max 10 words)","caption":"Full 4-6 sentence caption with hook + value + CTA${contactParts.length?' + contact block on new lines at end':''}","tags":["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],"hashtags":"#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8"}`;
 
-  const res = await fetch(cfg.aiServerUrl.replace(/\/+$/,'') + '/api/generate', {
-    method: 'POST',
-    headers: { 'x-gen-token': cfg.aiServerToken || '', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, chatLink: client.chatLink || undefined })
-  });
-  if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `ChatGPT server HTTP ${res.status}`); }
-  const data = await res.json();
-  let txt = (data.result||'').trim().replace(/```json|```/g,'').trim();
+  // Try the user's own ChatGPT/PromptForge server first (if configured);
+  // fall back to Groq's openai/gpt-oss-120b automatically on any failure —
+  // this fallback runs server-side, so it works even if nobody's browser
+  // is open, unlike a browser-only fallback would.
+  let txt = null;
+  let provider = 'chatgpt';
+  if (cfg.aiServerUrl) {
+    try {
+      const res = await fetch(cfg.aiServerUrl.replace(/\/+$/,'') + '/api/generate', {
+        method: 'POST',
+        headers: { 'x-gen-token': cfg.aiServerToken || '', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, chatLink: client.chatLink || undefined })
+      });
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `ChatGPT server HTTP ${res.status}`); }
+      const data = await res.json();
+      if (!data.result) throw new Error('ChatGPT server returned no result');
+      txt = data.result;
+    } catch (e) {
+      txt = null; // fall through to Groq below
+    }
+  }
+  if (!txt) {
+    txt = await callGroq(prompt);
+    provider = 'groq-fallback';
+  }
+
+  txt = txt.trim().replace(/```json|```/g,'').trim();
   txt = txt.replace(/[\x00-\x1F\x7F]/g, c => c==='\n'||c==='\t'?c:' ');
   const m = txt.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('Invalid ChatGPT JSON');
+  if (!m) throw new Error(`Invalid AI JSON (provider: ${provider})`);
   const jsonStr = m[0].replace(/(?<=":[\s]*"[^"\\]*)(\n)(?=[^"]*")/g, '\\n');
   const parsed = JSON.parse(jsonStr);
-  if (!parsed.title || !parsed.caption) throw new Error('ChatGPT response missing title/caption');
+  if (!parsed.title || !parsed.caption) throw new Error(`AI response missing title/caption (provider: ${provider})`);
   parsed.tags = parsed.tags || [];
+  parsed._aiProvider = provider; // for logging only — not persisted, see call site
   return parsed;
 }
 
@@ -361,7 +381,8 @@ async function runForClient(client, ctx) {
 
     let generated;
     try { generated = await withRetries(() => generateCaption(cfg, client, brandDoc, df.name, df.isVideo?'video':'image')); }
-    catch (e) { push(`✗ ChatGPT error for ${df.name} (after retries): ${e.message} — will retry again next run`, 'err'); continue; }
+    catch (e) { push(`✗ Caption generation error for ${df.name} (ChatGPT + Groq fallback both failed, after retries): ${e.message} — will retry again next run`, 'err'); continue; }
+    if (generated._aiProvider === 'groq-fallback') push(`⚠ ${df.name}: ChatGPT server failed — used Groq (openai/gpt-oss-120b) fallback instead`, 'warn');
 
     let drivePublicUrl = null;
     try { drivePublicUrl = await withRetries(() => makeFilePublic(driveToken, df.id)); }
