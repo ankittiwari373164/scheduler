@@ -11,6 +11,7 @@
 const { getCollection, getRawCollection } = require('../_lib/db');
 const { readBody, jsonResponse, withCors, nextId } = require('../_lib/helpers');
 const { getSupabase } = require('../_lib/supabase');
+const { callGroq, GROQ_MODEL } = require('../_lib/groq');
 
 function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 
@@ -177,6 +178,27 @@ async function handleChatgptClients(req, res) {
   })));
 }
 
+/* ---------------- AI fallback (Groq) ---------------- */
+
+// Proxies caption/metadata-generation prompts to Groq's OpenAI open-weight
+// model (openai/gpt-oss-120b) when the user's own ChatGPT/PromptForge
+// server is down, unconfigured, or errors. Deliberately routed through the
+// backend (not called directly from the browser) so GROQ_API_KEY never
+// reaches the client — same reasoning as why the user's own aiServerToken
+// already goes through their own proxy server rather than exposing a raw
+// OpenAI key.
+async function handleAiFallback(req, res) {
+  if (req.method !== 'POST') return jsonResponse(res, 405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body.prompt) return jsonResponse(res, 400, { error: 'prompt required' });
+  try {
+    const result = await callGroq(body.prompt);
+    return jsonResponse(res, 200, { result, provider: 'groq', model: GROQ_MODEL });
+  } catch (e) {
+    return jsonResponse(res, 502, { error: e.message });
+  }
+}
+
 /* ---------------- dispatch ---------------- */
 
 module.exports = withCors(async (req, res) => {
@@ -185,5 +207,6 @@ module.exports = withCors(async (req, res) => {
   if (resource === 'config')          return handleConfig(req, res);
   if (resource === 'omni-clients')    return handleOmniClients(req, res);
   if (resource === 'chatgpt-clients') return handleChatgptClients(req, res);
+  if (resource === 'ai-fallback')     return handleAiFallback(req, res);
   return jsonResponse(res, 400, { error: 'unknown or missing resource' });
 });
