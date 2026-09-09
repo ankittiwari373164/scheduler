@@ -1999,23 +1999,19 @@ async function ytUpload(){
   const resEl = document.getElementById('ytResult');
   resEl.innerHTML = '';
   try {
-    // 1) Metadata via ChatGPT
+    // 1) Metadata via ChatGPT (with automatic Groq fallback)
     let meta = { title, description: '', hashtags: '', tags: '' };
-    if (CFG.aiServerUrl) {
+    {
       prog.textContent = 'Writing metadata with ChatGPT…';
       const brand = (DB.brandDetails.find(b => b.clientId === clientId) || {}).content || '';
       const prompt = `You are a YouTube Shorts SEO expert. Return ONLY valid JSON, no markdown, with keys "title","description","hashtags","tags".\n"title": <=90 char catchy title (you may refine the given one).\n"description": 2-4 sentence description with a soft CTA, no hashtags inside.\n"hashtags": a single string of 3-6 hashtags separated by spaces (with #).\n"tags": a single comma-separated string of 8-15 SEO keywords (no #).\n\nBrand: ${client ? client.name : ''}\nBrand info: ${brand}\nVideo title: ${title}\n${ctx ? 'Extra context: ' + ctx : ''}`;
       try {
-        const r = await fetch(CFG.aiServerUrl + '/api/generate', {
-          method: 'POST',
-          headers: { 'x-gen-token': CFG.aiServerToken || '', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, chatLink: (client && client.chatLink) || undefined })
-        });
-        const d = await r.json();
-        const txt = (d.result || '').trim().replace(/```json|```/g, '').trim();
+        const aiRes = await callAiGenerate(prompt, (client && client.chatLink) || undefined);
+        if (aiRes.provider === 'groq-fallback') prog.textContent = 'ChatGPT unavailable — used Groq fallback for metadata…';
+        const txt = (aiRes.text || '').trim().replace(/```json|```/g, '').trim();
         const m = txt.match(/\{[\s\S]*\}/);
         if (m) meta = Object.assign(meta, JSON.parse(m[0]));
-      } catch (e) { prog.textContent = 'ChatGPT metadata failed, uploading with basic title…'; }
+      } catch (e) { prog.textContent = 'ChatGPT + Groq fallback both failed, uploading with basic title…'; }
     }
 
     const finalTitle = (meta.title || title).slice(0, 100);
@@ -3128,7 +3124,6 @@ function renderAIArea() {
 }
 
 async function generateFile(index) {
-  if (!CFG.aiServerUrl) { toast('Set your ChatGPT server URL in Settings first', 'error'); nav('settings'); return; }
   const f = SCH.files[index];
   if (!f) return;
   const bd = DB.brandDetails.find(b => b.clientId === SCH.clientId);
@@ -3173,17 +3168,9 @@ Return ONLY valid JSON, no markdown fences, no explanation:
 {"title":"Short punchy post title (max 10 words)","caption":"Full 4-6 sentence caption with hook + value + CTA${contactParts.length ? ' + contact block on new lines at end' : ''}","tags":["#hashtag1","#hashtag2","#hashtag3","#hashtag4","#hashtag5","#hashtag6","#hashtag7","#hashtag8"],"hashtags":"#hashtag1 #hashtag2 #hashtag3 #hashtag4 #hashtag5 #hashtag6 #hashtag7 #hashtag8"}`;
 
   try {
-    const res = await fetch(CFG.aiServerUrl + '/api/generate', {
-      method:'POST',
-      headers:{'x-gen-token': CFG.aiServerToken || '', 'Content-Type':'application/json'},
-      body: JSON.stringify({ prompt, chatLink: (c && c.chatLink) || undefined })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(()=>({error:'Server error'}));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    let txt = (data.result || '').trim().replace(/```json|```/g,'').trim();
+    const aiRes = await callAiGenerate(prompt, (c && c.chatLink) || undefined);
+    if (aiRes.provider === 'groq-fallback') toast('ChatGPT server unavailable — used Groq fallback for this caption', 'warn');
+    let txt = (aiRes.text || '').trim().replace(/```json|```/g,'').trim();
     // Sanitize control characters that break JSON.parse
     txt = txt.replace(/[\x00-\x1F\x7F]/g, c => c==='\n'||c==='\t' ? c : ' ');
     const jsonMatch = txt.match(/\{[\s\S]*\}/);
@@ -3232,7 +3219,19 @@ async function generateAll() {
 }
 
 function checkGroqBadge() {
-  document.getElementById('aiBadge').style.display = CFG.aiServerUrl ? 'inline-flex' : 'none';
+  const el = document.getElementById('aiBadge');
+  el.style.display = 'inline-flex';
+  const dot = el.querySelector('.badge-dot');
+  if (CFG.aiServerUrl) {
+    el.lastChild.textContent = 'ChatGPT · Ready';
+    if (dot) dot.style.background = 'var(--green)';
+  } else {
+    // No ChatGPT/PromptForge server configured — AI generation still works
+    // via the automatic Groq (openai/gpt-oss-120b) fallback, just flagged
+    // differently so it's clear which path is actually in use.
+    el.lastChild.textContent = 'Groq · Fallback only';
+    if (dot) dot.style.background = 'var(--amber)';
+  }
 }
 
 function openExplorer() {
@@ -4995,9 +4994,41 @@ async function purgeDueDriveFiles(opts = {}) {
   return removed;
 }
 
-// Generate caption via Groq for a Drive file
+// Shared caption/metadata generation call: tries the user's own configured
+// ChatGPT/PromptForge server first, and automatically falls back to Groq
+// (openai/gpt-oss-120b) — proxied through our own backend, since a raw
+// Groq API key must never be exposed in the browser — if that fails or
+// isn't configured at all. Returns { text, provider } so callers can
+// surface which one actually produced the result.
+async function callAiGenerate(prompt, chatLink) {
+  if (CFG.aiServerUrl) {
+    try {
+      const res = await fetch(CFG.aiServerUrl + '/api/generate', {
+        method: 'POST',
+        headers: { 'x-gen-token': CFG.aiServerToken || '', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, chatLink })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.result) return { text: data.result, provider: 'chatgpt' };
+      }
+    } catch (_) { /* fall through to Groq */ }
+  }
+  const res2 = await fetch('/api/store?resource=ai-fallback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
+  });
+  if (!res2.ok) {
+    const e = await res2.json().catch(() => ({}));
+    throw new Error(e.error || `AI generation failed (both ChatGPT server and Groq fallback): HTTP ${res2.status}`);
+  }
+  const data2 = await res2.json();
+  if (!data2.result) throw new Error('AI fallback returned no result');
+  return { text: data2.result, provider: 'groq-fallback' };
+}
+
 async function generateDriveCaption(fileName, mediaType, clientId) {
-  if (!CFG.aiServerUrl) throw new Error('No ChatGPT server URL configured');
   const c = DB.clients.find(x=>x.id===clientId);
   const bd = DB.brandDetails.find(b=>b.clientId===clientId);
   const topic = fileName.replace(/\.[^/.]+$/,'').replace(/[-_]+/g,' ').replace(/\b\w/g,x=>x.toUpperCase());
@@ -5027,10 +5058,8 @@ ${contactParts.length ? '- After the CTA, on new lines, paste the MANDATORY CONT
 
 Return ONLY valid JSON, no markdown fences:
 {"title":"Short punchy title (max 10 words)","caption":"Full 4-6 sentence caption with hook + value + CTA${contactParts.length?' + contact block on new lines at end':''}","tags":["#tag1","#tag2","#tag3","#tag4","#tag5","#tag6","#tag7","#tag8"],"hashtags":"#tag1 #tag2 #tag3 #tag4 #tag5 #tag6 #tag7 #tag8"}`;
-  const res = await fetch(CFG.aiServerUrl + '/api/generate',{method:'POST',headers:{'x-gen-token':CFG.aiServerToken||'','Content-Type':'application/json'},body:JSON.stringify({prompt, chatLink:(c&&c.chatLink)||undefined})});
-  if (!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`ChatGPT server HTTP ${res.status}`); }
-  const data = await res.json();
-  let txt = (data.result||'').trim().replace(/```json|```/g,'').trim();
+  const res = await callAiGenerate(prompt, (c && c.chatLink) || undefined);
+  let txt = (res.text||'').trim().replace(/```json|```/g,'').trim();
   // Sanitize control characters that break JSON.parse
   txt = txt.replace(/[\x00-\x1F\x7F]/g, c => c==='\n'||c==='\t'?c:' ');
   const m = txt.match(/\{[\s\S]*\}/);
@@ -5047,6 +5076,7 @@ Return ONLY valid JSON, no markdown fences:
   if (contactParts.length && parsed.caption && !parsed.caption.includes(contactParts[0].slice(2,10))) {
     parsed.caption = parsed.caption.trimEnd() + '\n' + contactParts.join('  |  ');
   }
+  parsed._aiProvider = res.provider; // for bot log visibility only, not persisted
   return parsed;
 }
 
@@ -5265,7 +5295,8 @@ async function processDriveClient(client) {
     botLog(`🤖 Generating caption for ${df.name}…`,'info');
     let generated;
     try { generated = await generateDriveCaption(df.name, df.isVideo?'video':'image', client.id); }
-    catch(e){ botLog(`✗ ChatGPT error: ${e.message}`,'err'); continue; }
+    catch(e){ botLog(`✗ Caption generation error (ChatGPT + Groq fallback both failed): ${e.message}`,'err'); continue; }
+    if (generated._aiProvider === 'groq-fallback') botLog(`⚠ ${df.name}: ChatGPT server failed — used Groq (openai/gpt-oss-120b) fallback instead`,'warn');
 
     // Make Drive file publicly readable so Meta can fetch it directly (no download needed)
     let drivePublicUrl = null;
@@ -5448,7 +5479,6 @@ async function processDriveClient(client) {
 
 async function runDriveBotForClient(clientId) {
   if (!CFG.metaConnected) return toast('Connect Meta first in Settings','error');
-  if (!CFG.aiServerUrl) return toast('Set your ChatGPT server URL in Settings first','error');
   const _gs = await Api.googleStatus().catch(()=>({connected:false})); if (!_gs.connected) return toast('Connect Google Drive in Settings first','error');
   const client = DB.clients.find(c=>c.id===clientId);
   if (!client?.driveLink) return toast('No Drive folder configured for this client','error');
@@ -5463,7 +5493,6 @@ async function runDriveBotForClient(clientId) {
 
 async function runDriveBot() {
   if (!CFG.metaConnected) return toast('Connect Meta first in Settings','error');
-  if (!CFG.aiServerUrl) return toast('Set your ChatGPT server URL in Settings first','error');
   const _gs = await Api.googleStatus().catch(()=>({connected:false})); if (!_gs.connected) return toast('Connect Google Drive in Settings first','error');
   const clients = DB.clients.filter(c=>c.driveLink);
   if (!clients.length){ toast('No clients have Drive configured — edit a client to add a Drive folder link','warn'); return; }
