@@ -222,7 +222,13 @@ Return ONLY valid JSON, no markdown fences:
   const jsonStr = m[0].replace(/(?<=":[\s]*"[^"\\]*)(\n)(?=[^"]*")/g, '\\n');
   const parsed = JSON.parse(jsonStr);
   if (!parsed.title || !parsed.caption) throw new Error(`AI response missing title/caption (provider: ${provider})`);
-  parsed.tags = parsed.tags || [];
+  // Fallback providers (Groq/Gemini) don't always strictly follow the
+  // "tags must be a JSON array" instruction the way ChatGPT does —
+  // sometimes returning it as a plain string instead. `parsed.tags || []`
+  // alone doesn't catch that case since a non-empty string is truthy.
+  parsed.tags = Array.isArray(parsed.tags)
+    ? parsed.tags
+    : (typeof parsed.tags === 'string' ? parsed.tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean) : []);
   parsed._aiProvider = provider; // for logging only — not persisted, see call site
   return parsed;
 }
