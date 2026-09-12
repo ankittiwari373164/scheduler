@@ -11,7 +11,7 @@
 const { getCollection, getRawCollection } = require('../_lib/db');
 const { readBody, jsonResponse, withCors, nextId } = require('../_lib/helpers');
 const { getSupabase } = require('../_lib/supabase');
-const { callGroq, GROQ_MODEL } = require('../_lib/groq');
+const { callFreeFallback } = require('../_lib/groq');
 
 function strip(d) { if (!d) return d; const { _id, ...r } = d; return r; }
 
@@ -192,8 +192,8 @@ async function handleAiFallback(req, res) {
   const body = await readBody(req);
   if (!body.prompt) return jsonResponse(res, 400, { error: 'prompt required' });
   try {
-    const result = await callGroq(body.prompt);
-    return jsonResponse(res, 200, { result, provider: 'groq', model: GROQ_MODEL });
+    const { text, provider } = await callFreeFallback(body.prompt);
+    return jsonResponse(res, 200, { result: text, provider: provider === 'gemini' ? 'gemini-fallback' : 'groq-fallback' });
   } catch (e) {
     return jsonResponse(res, 502, { error: e.message });
   }
