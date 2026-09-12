@@ -3189,6 +3189,15 @@ Return ONLY valid JSON, no markdown fences, no explanation:
     if (contactParts.length && parsed.caption && !parsed.caption.includes(contactParts[0].slice(2, 10))) {
       parsed.caption = parsed.caption.trimEnd() + '\n' + contactParts.join('  |  ');
     }
+    // Fallback providers (Groq/Gemini) don't always strictly follow the
+    // "tags must be a JSON array" instruction the way ChatGPT does —
+    // sometimes returning it as a plain string instead. Normalize so
+    // downstream code (renderAIArea's gen.tags.map) never breaks on this.
+    if (!Array.isArray(parsed.tags)) {
+      parsed.tags = typeof parsed.tags === 'string'
+        ? parsed.tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
+        : [];
+    }
     f.generated = parsed;
     f.status = 'ready';
     DB._genCount++;
@@ -5077,6 +5086,13 @@ Return ONLY valid JSON, no markdown fences:
   // Guarantee contact details appear even if ChatGPT omitted them
   if (contactParts.length && parsed.caption && !parsed.caption.includes(contactParts[0].slice(2,10))) {
     parsed.caption = parsed.caption.trimEnd() + '\n' + contactParts.join('  |  ');
+  }
+  // Fallback providers (Groq/Gemini) don't always strictly follow the
+  // "tags must be a JSON array" instruction — normalize defensively.
+  if (!Array.isArray(parsed.tags)) {
+    parsed.tags = typeof parsed.tags === 'string'
+      ? parsed.tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
+      : [];
   }
   parsed._aiProvider = res.provider; // for bot log visibility only, not persisted
   return parsed;
