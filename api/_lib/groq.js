@@ -7,7 +7,7 @@
 // api/store/index.js's "ai-fallback" resource (browser calls this via that
 // proxy, since a raw GROQ_API_KEY must never reach the client).
 
-const GROQ_MODEL = 'openai/gpt-oss-120b';
+const GROQ_MODEL = 'openai/gpt-oss-20b';
 
 async function callGroq(prompt, { temperature = 0.8 } = {}) {
   const apiKey = process.env.GROQ_API_KEY;
