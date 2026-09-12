@@ -2008,6 +2008,7 @@ async function ytUpload(){
       try {
         const aiRes = await callAiGenerate(prompt, (client && client.chatLink) || undefined);
         if (aiRes.provider === 'groq-fallback') prog.textContent = 'ChatGPT unavailable — used Groq fallback for metadata…';
+        if (aiRes.provider === 'gemini-fallback') prog.textContent = 'ChatGPT + Groq unavailable — used Gemini fallback for metadata…';
         const txt = (aiRes.text || '').trim().replace(/```json|```/g, '').trim();
         const m = txt.match(/\{[\s\S]*\}/);
         if (m) meta = Object.assign(meta, JSON.parse(m[0]));
@@ -3170,6 +3171,7 @@ Return ONLY valid JSON, no markdown fences, no explanation:
   try {
     const aiRes = await callAiGenerate(prompt, (c && c.chatLink) || undefined);
     if (aiRes.provider === 'groq-fallback') toast('ChatGPT server unavailable — used Groq fallback for this caption', 'warn');
+    if (aiRes.provider === 'gemini-fallback') toast('ChatGPT + Groq unavailable — used Gemini fallback for this caption', 'warn');
     let txt = (aiRes.text || '').trim().replace(/```json|```/g,'').trim();
     // Sanitize control characters that break JSON.parse
     txt = txt.replace(/[\x00-\x1F\x7F]/g, c => c==='\n'||c==='\t' ? c : ' ');
@@ -5025,7 +5027,7 @@ async function callAiGenerate(prompt, chatLink) {
   }
   const data2 = await res2.json();
   if (!data2.result) throw new Error('AI fallback returned no result');
-  return { text: data2.result, provider: 'groq-fallback' };
+  return { text: data2.result, provider: data2.provider || 'groq-fallback' };
 }
 
 async function generateDriveCaption(fileName, mediaType, clientId) {
@@ -5297,6 +5299,7 @@ async function processDriveClient(client) {
     try { generated = await generateDriveCaption(df.name, df.isVideo?'video':'image', client.id); }
     catch(e){ botLog(`✗ Caption generation error (ChatGPT + Groq fallback both failed): ${e.message}`,'err'); continue; }
     if (generated._aiProvider === 'groq-fallback') botLog(`⚠ ${df.name}: ChatGPT server failed — used Groq (openai/gpt-oss-120b) fallback instead`,'warn');
+    if (generated._aiProvider === 'gemini-fallback') botLog(`⚠ ${df.name}: ChatGPT + Groq both failed — used Gemini fallback instead`,'warn');
 
     // Make Drive file publicly readable so Meta can fetch it directly (no download needed)
     let drivePublicUrl = null;
