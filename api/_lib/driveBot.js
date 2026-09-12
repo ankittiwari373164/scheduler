@@ -15,7 +15,7 @@
 const { getCollection } = require('./db');
 const { getValidAccessToken } = require('./googleOAuth');
 const { withRetries } = require('./retry');
-const { callGroq } = require('./groq');
+const { callFreeFallback } = require('./groq');
 const { getStatusForClient: getYtStatusForClient } = require('./youtubeOAuth');
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -206,12 +206,13 @@ Return ONLY valid JSON, no markdown fences:
       if (!data.result) throw new Error('ChatGPT server returned no result');
       txt = data.result;
     } catch (e) {
-      txt = null; // fall through to Groq below
+      txt = null; // fall through to the free-provider chain below
     }
   }
   if (!txt) {
-    txt = await callGroq(prompt);
-    provider = 'groq-fallback';
+    const fallback = await callFreeFallback(prompt);
+    txt = fallback.text;
+    provider = fallback.provider === 'gemini' ? 'gemini-fallback' : 'groq-fallback';
   }
 
   txt = txt.trim().replace(/```json|```/g,'').trim();
@@ -383,6 +384,7 @@ async function runForClient(client, ctx) {
     try { generated = await withRetries(() => generateCaption(cfg, client, brandDoc, df.name, df.isVideo?'video':'image')); }
     catch (e) { push(`✗ Caption generation error for ${df.name} (ChatGPT + Groq fallback both failed, after retries): ${e.message} — will retry again next run`, 'err'); continue; }
     if (generated._aiProvider === 'groq-fallback') push(`⚠ ${df.name}: ChatGPT server failed — used Groq (openai/gpt-oss-120b) fallback instead`, 'warn');
+    if (generated._aiProvider === 'gemini-fallback') push(`⚠ ${df.name}: ChatGPT + Groq both failed — used Gemini fallback instead`, 'warn');
 
     let drivePublicUrl = null;
     try { drivePublicUrl = await withRetries(() => makeFilePublic(driveToken, df.id)); }
