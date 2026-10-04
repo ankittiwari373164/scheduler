@@ -159,6 +159,38 @@ async function postToFacebookAuto(target, caption, mediaUrl, isVideo, scheduledU
   return fb2Data.id;
 }
 
+// Makes sure captions are readable paragraphs, even when the AI returns a
+// single wall of text. Leaves already-formatted captions alone (just tidies
+// spacing), otherwise groups sentences into short paragraphs and puts any
+// contact lines (🌐 📞 ✉️) on their own lines at the end.
+function formatCaption(text) {
+  let t = String(text || '').replace(/\r\n/g, '\n').replace(/\\n/g, '\n').trim();
+  // Pull contact lines out so they always sit on their own lines at the bottom
+  const contactRe = /\s*((?:🌐|📞|✉️)\s*[^\n🌐📞✉]+)/gu;
+  const contacts = [];
+  t = t.replace(contactRe, (_, c) => { contacts.push(c.trim()); return '\n'; }).trim();
+
+  if (!/\n\s*\n/.test(t)) {
+    // No paragraph breaks — build them: split into sentences, ~2 per paragraph,
+    // keeping a trailing emoji attached to its sentence.
+    const sentences = t.replace(/\n+/g, ' ')
+      .match(/[^.!?]+[.!?]+(?:\s*\p{Extended_Pictographic}\uFE0F?)*|[^.!?]+$/gu) || [t];
+    const clean = sentences.map(x => x.trim()).filter(Boolean);
+    const paras = [];
+    if (clean.length <= 3) paras.push(...clean);
+    else {
+      paras.push(clean.slice(0, 1).join(' '));                       // hook
+      const mid = clean.slice(1, -1);
+      for (let i = 0; i < mid.length; i += 2) paras.push(mid.slice(i, i + 2).join(' '));
+      paras.push(clean[clean.length - 1]);                           // CTA
+    }
+    t = paras.join('\n\n');
+  }
+  t = t.split('\n').map(l => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (contacts.length) t += '\n\n' + contacts.join('\n');
+  return t;
+}
+
 async function generateCaption(cfg, client, brandDoc, fileName, mediaType) {
   const topic = fileName.replace(/\.[^/.]+$/,'').replace(/[-_]+/g,' ').replace(/\b\w/g,x=>x.toUpperCase());
   const brand = brandDoc ? brandDoc.content : `Brand: ${client.name}. Type: ${client.businessType||'Business'}.`;
@@ -182,6 +214,11 @@ WRITING REQUIREMENTS:
 - Start with a strong hook (question, statistic, bold statement, vivid scenario).
 - Develop the value: why it matters to the reader, what problem it solves, what benefit they get.
 - Use 2-4 well-placed emojis throughout.
+- FORMAT AS CLEAN, SEPARATE PARAGRAPHS — never one big block of text:
+  • Paragraph 1: the hook (1-2 sentences).
+  • Paragraph 2: the value / experience (2-3 sentences). If listing features, offers or prices, put EACH item on its own line starting with a relevant emoji.
+  • Paragraph 3: the call-to-action (1-2 sentences).
+  • Separate paragraphs with a blank line, written as \\n\\n inside the JSON string. Use \\n for single line breaks between list items.
 - End with a clear, specific call-to-action (book now, DM us, visit website, etc.).
 ${contactParts.length ? '- After the CTA, on new lines, paste the MANDATORY CONTACT BLOCK exactly as given above. This is non-negotiable.\n' : ''}- Match the brand voice from BRAND INFORMATION above.
 
@@ -229,6 +266,7 @@ Return ONLY valid JSON, no markdown fences:
   parsed.tags = Array.isArray(parsed.tags)
     ? parsed.tags
     : (typeof parsed.tags === 'string' ? parsed.tags.split(/[,\s]+/).map(t => t.trim()).filter(Boolean) : []);
+  parsed.caption = formatCaption(parsed.caption);
   parsed._aiProvider = provider; // for logging only — not persisted, see call site
   return parsed;
 }
